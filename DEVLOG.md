@@ -4,8 +4,9 @@
 
 - Removed redundant backend environment folder: `backend/venv`
 - Kept the valid backend virtual environment in `backend/.venv`
-- Ensured `.gitignore` continues to ignore backend local env file: `/backend/.env`
+- Ensured `.gitignore` ignores backend local env file: `/backend/.env`, backend `.venv`, `node_modules`, Expo cache directories, and Python bytecode
 - Removed stale temporary cache in `backend/__pycache__`
+- Verified no untracked non-ignored files remain before staging changes
 
 ## Backend
 
