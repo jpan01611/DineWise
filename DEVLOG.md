@@ -7,6 +7,7 @@
 - Ensured `.gitignore` ignores backend local env file: `/backend/.env`, backend `.venv`, `node_modules`, Expo cache directories, and Python bytecode
 - Removed stale temporary cache in `backend/__pycache__`
 - Verified no untracked non-ignored files remain before staging changes
+- Resolved an Expo startup issue caused by a port conflict on `8081` by clearing the old Metro process and restarting the dev server
 
 ## Backend
 

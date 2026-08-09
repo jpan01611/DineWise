@@ -1,4 +1,6 @@
-# Welcome to your Expo app 👋
+# DineWise
+
+DineWise is a student-focused mobile app that helps college students reduce unnecessary delivery spending by nudging them toward lower-cost campus food options when they are craving something late at night or running low on meal-plan value. The app combines a simple Expo frontend with a FastAPI backend and Gemini-powered suggestions to make campus dining decisions feel easier, cheaper, and more intentional.
 
 This is an [Expo](https://expo.dev) project created with [`create-expo-app`](https://www.npmjs.com/package/create-expo-app).
 

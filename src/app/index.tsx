@@ -32,7 +32,12 @@ function getDevMenuHint() {
 export default function HomeScreen() {
   const [balance, setBalance] = React.useState('50.00');
   const [craving, setCraving] = React.useState('Burger');
+  const [context, setContext] = React.useState('late-night study session');
+  const [mealPlanStatus, setMealPlanStatus] = React.useState('dining dollars left');
+  const [deliveryFrequency, setDeliveryFrequency] = React.useState('2–3 times a week');
   const [suggestion, setSuggestion] = React.useState<string | null>(null);
+  const [savingsEstimate, setSavingsEstimate] = React.useState<string | null>(null);
+  const [whyItMatches, setWhyItMatches] = React.useState<string | null>(null);
 
   const fetchNudge = async () => {
     try {
@@ -40,7 +45,13 @@ export default function HomeScreen() {
       const response = await fetch(`http://${backendHost}:8000/nudge`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ balance: parseFloat(balance) || 0, craving }),
+        body: JSON.stringify({
+          balance: parseFloat(balance) || 0,
+          craving,
+          context,
+          meal_plan_status: mealPlanStatus,
+          delivery_frequency: deliveryFrequency,
+        }),
       });
 
       const data = await response.json();
@@ -51,6 +62,8 @@ export default function HomeScreen() {
 
       console.log('Backend response:', data);
       setSuggestion(data.suggestion ?? JSON.stringify(data));
+      setSavingsEstimate(data.savings_estimate ?? null);
+      setWhyItMatches(data.why_it_matches ?? null);
       Alert.alert('Success', 'Backend returned a suggestion.');
     } catch (error) {
       console.error('Connection failed:', error);
@@ -64,24 +77,17 @@ export default function HomeScreen() {
         <ThemedView style={styles.heroSection}>
           <AnimatedIcon />
           <ThemedText type="title" style={styles.title}>
-            Welcome to&nbsp;Expo
+            DineWise
+          </ThemedText>
+          <ThemedText type="small" style={styles.subtitle}>
+            Helping students avoid wasted meal-plan dollars and unnecessary delivery costs.
           </ThemedText>
         </ThemedView>
 
-        <ThemedText type="code" style={styles.code}>
-          get started
-        </ThemedText>
-
         <ThemedView type="backgroundElement" style={styles.stepContainer}>
-          <HintRow
-            title="Try editing"
-            hint={<ThemedText type="code">src/app/index.tsx</ThemedText>}
-          />
+          <HintRow title="Problem" hint={<ThemedText type="small">Delivery feels easy, but campus meal plans are often underused.</ThemedText>} />
+          <HintRow title="Demo" hint={<ThemedText type="small">Enter a craving and context to see a smarter campus-food nudge.</ThemedText>} />
           <HintRow title="Dev tools" hint={getDevMenuHint()} />
-          <HintRow
-            title="Fresh start"
-            hint={<ThemedText type="code">npm run reset-project</ThemedText>}
-          />
           <View style={styles.form}>
             <TextInput
               style={styles.input}
@@ -96,11 +102,31 @@ export default function HomeScreen() {
               onChangeText={setCraving}
               placeholder="Craving"
             />
-            <Button title="Fetch Nudge" onPress={fetchNudge} />
+            <TextInput
+              style={styles.input}
+              value={context}
+              onChangeText={setContext}
+              placeholder="Context (e.g. late-night study)"
+            />
+            <TextInput
+              style={styles.input}
+              value={mealPlanStatus}
+              onChangeText={setMealPlanStatus}
+              placeholder="Meal plan status"
+            />
+            <TextInput
+              style={styles.input}
+              value={deliveryFrequency}
+              onChangeText={setDeliveryFrequency}
+              placeholder="Delivery frequency"
+            />
+            <Button title="Generate DineWise nudge" onPress={fetchNudge} />
             {suggestion ? (
               <ThemedView type="backgroundElement" style={styles.suggestionBox}>
                 <ThemedText type="smallBold">Suggestion</ThemedText>
                 <ThemedText>{suggestion}</ThemedText>
+                {savingsEstimate ? <ThemedText type="small">{savingsEstimate}</ThemedText> : null}
+                {whyItMatches ? <ThemedText type="small">{whyItMatches}</ThemedText> : null}
               </ThemedView>
             ) : null}
           </View>
@@ -135,6 +161,10 @@ const styles = StyleSheet.create({
   },
   title: {
     textAlign: 'center',
+  },
+  subtitle: {
+    textAlign: 'center',
+    maxWidth: 320,
   },
   code: {
     textTransform: 'uppercase',
