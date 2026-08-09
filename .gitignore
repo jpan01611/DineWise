@@ -43,6 +43,11 @@ yarn-error.*
 # typescript
 *.tsbuildinfo
 
+# Python cache
+__pycache__/
+*.py[cod]
+*.pyo
+
 example
 
 # generated native folders
