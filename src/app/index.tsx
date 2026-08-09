@@ -1,5 +1,6 @@
 import * as Device from 'expo-device';
-import { Platform, StyleSheet } from 'react-native';
+import React from 'react';
+import { Alert, Button, Platform, StyleSheet, TextInput, View } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 
 import { AnimatedIcon } from '@/components/animated-icon';
@@ -29,6 +30,34 @@ function getDevMenuHint() {
 }
 
 export default function HomeScreen() {
+  const [balance, setBalance] = React.useState('50.00');
+  const [craving, setCraving] = React.useState('Burger');
+  const [suggestion, setSuggestion] = React.useState<string | null>(null);
+
+  const fetchNudge = async () => {
+    try {
+      const backendHost = Platform.OS === 'android' ? '10.0.2.2' : 'localhost';
+      const response = await fetch(`http://${backendHost}:8000/nudge`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ balance: parseFloat(balance) || 0, craving }),
+      });
+
+      const data = await response.json();
+      if (!response.ok) {
+        const errorMessage = data.detail || data.message || JSON.stringify(data);
+        throw new Error(errorMessage);
+      }
+
+      console.log('Backend response:', data);
+      setSuggestion(data.suggestion ?? JSON.stringify(data));
+      Alert.alert('Success', 'Backend returned a suggestion.');
+    } catch (error) {
+      console.error('Connection failed:', error);
+      Alert.alert('Connection failed', String(error));
+    }
+  };
+
   return (
     <ThemedView style={styles.container}>
       <SafeAreaView style={styles.safeArea}>
@@ -53,6 +82,28 @@ export default function HomeScreen() {
             title="Fresh start"
             hint={<ThemedText type="code">npm run reset-project</ThemedText>}
           />
+          <View style={styles.form}>
+            <TextInput
+              style={styles.input}
+              value={balance}
+              onChangeText={setBalance}
+              keyboardType="numeric"
+              placeholder="Meal balance"
+            />
+            <TextInput
+              style={styles.input}
+              value={craving}
+              onChangeText={setCraving}
+              placeholder="Craving"
+            />
+            <Button title="Fetch Nudge" onPress={fetchNudge} />
+            {suggestion ? (
+              <ThemedView type="backgroundElement" style={styles.suggestionBox}>
+                <ThemedText type="smallBold">Suggestion</ThemedText>
+                <ThemedText>{suggestion}</ThemedText>
+              </ThemedView>
+            ) : null}
+          </View>
         </ThemedView>
 
         {Platform.OS === 'web' && <WebBadge />}
@@ -94,5 +145,24 @@ const styles = StyleSheet.create({
     paddingHorizontal: Spacing.three,
     paddingVertical: Spacing.four,
     borderRadius: Spacing.four,
+  },
+  form: {
+    gap: Spacing.three,
+    marginTop: Spacing.four,
+  },
+  input: {
+    borderWidth: 1,
+    borderColor: '#ccc',
+    borderRadius: Spacing.two,
+    paddingHorizontal: Spacing.three,
+    paddingVertical: Spacing.two,
+    backgroundColor: '#fff',
+  },
+  suggestionBox: {
+    padding: Spacing.three,
+    borderRadius: Spacing.two,
+    backgroundColor: '#f2f5ff',
+    borderColor: '#c5d1ff',
+    borderWidth: 1,
   },
 });
