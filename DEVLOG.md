@@ -255,3 +255,33 @@ EXPO_PUBLIC_API_URL=http://<your-lan-ip>:8000
 - Expo Go path is substantially stabilized with known startup/network pattern.
 - Main-page layout has mobile/web split behavior and safe-area tuning.
 - Remaining adjustments are visual tuning only (spacing preferences per device), not architecture blockers.
+
+### Git Push Protection Incident (Documented)
+
+- Push to `main` was rejected by GitHub repository rules (GH013).
+- Secret scanning detected a committed credential in prior history:
+  - commit: `bd53d7c0935173c493e1725e2330624bf9fa656b`
+  - file path: `backend/.env.example:2`
+  - rule: GCP API key bound to a service account.
+
+#### Key Troubleshooting Finding
+
+- Removing the key from the latest working tree was necessary but not sufficient.
+- Push protection scans the entire pushed commit range, so any older commit containing the secret still blocks push.
+
+#### Remediation Path Used
+
+Rewrote local commits against `origin/main` to produce a clean commit history without the leaked secret:
+
+```bash
+cd /mnt/c/Users/galva/Desktop/DineWise
+git fetch origin
+git reset --soft origin/main
+git commit -m "add features, troubleshoot expo go connectivity (secret removed)"
+git push --force-with-lease origin main
+```
+
+#### Security Follow-up
+
+- Rotate/revoke the previously exposed GCP key even after history cleanup.
+- Keep `backend/.env.example` as placeholder-only guidance text with no real credential values.
