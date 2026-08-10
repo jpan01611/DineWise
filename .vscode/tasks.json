@@ -1,0 +1,142 @@
+{
+	"version": "2.0.0",
+	"tasks": [
+		{
+			"label": "expo-recovery-install",
+			"type": "shell",
+			"command": "powershell",
+			"args": [
+				"-NoProfile",
+				"-ExecutionPolicy",
+				"Bypass",
+				"-Command",
+				"Set-Location 'C:\\Users\\galva\\Desktop\\DineWise'; if (Test-Path node_modules) { Remove-Item node_modules -Recurse -Force }; if (Test-Path package-lock.json) { Remove-Item package-lock.json -Force }; npm install"
+			],
+			"isBackground": false
+		},
+		{
+			"label": "expo-recovery-wsl",
+			"type": "shell",
+			"command": "bash",
+			"args": [
+				"-lc",
+				"cd /mnt/c/Users/galva/Desktop/DineWise && rm -rf node_modules package-lock.json && npm install"
+			],
+			"isBackground": false
+		},
+		{
+			"label": "expo-recovery-wsl",
+			"type": "shell",
+			"command": "cd /mnt/c/Users/galva/Desktop/DineWise && rm -rf node_modules package-lock.json && npm install",
+			"isBackground": false
+		},
+		{
+			"label": "deps-reinstall-simple",
+			"type": "shell",
+			"command": "rm -rf node_modules package-lock.json && npm install",
+			"isBackground": false
+		},
+		{
+			"label": "env-check",
+			"type": "shell",
+			"command": "which npm && npm -v && node -v && test -f package.json && echo PACKAGE_OK",
+			"isBackground": false
+		},
+		{
+			"label": "npm-diagnose",
+			"type": "shell",
+			"command": "type npm; command -v npm; ls -l \"$(command -v npm)\"; head -n 20 \"$(command -v npm)\"",
+			"isBackground": false
+		},
+		{
+			"label": "npm-diagnose-bash",
+			"type": "shell",
+			"command": "bash -lc \"type npm; command -v npm; ls -l \\\"$(command -v npm)\\\"; node -v; npm --version\"",
+			"isBackground": false
+		},
+		{
+			"label": "project-state-check",
+			"type": "shell",
+			"command": "bash -lc \"cd /mnt/c/Users/galva/Desktop/DineWise && ls -ld node_modules && [ -f package-lock.json ] && echo LOCK_OK || echo LOCK_MISSING\"",
+			"isBackground": false
+		},
+		{
+			"label": "windows-npm-install-via-wsl",
+			"type": "shell",
+			"command": "bash -lc '\"/mnt/c/Windows/System32/WindowsPowerShell/v1.0/powershell.exe\" -NoProfile -ExecutionPolicy Bypass -Command \"Set-Location \\\"C:\\\\Users\\\\galva\\\\Desktop\\\\DineWise\\\"; npm install\"'",
+			"isBackground": false
+		},
+		{
+			"label": "windows-npm-install-via-wsl2",
+			"type": "shell",
+			"command": "bash -lc \"/mnt/c/Windows/System32/WindowsPowerShell/v1.0/powershell.exe -NoProfile -ExecutionPolicy Bypass -Command \\\"Set-Location 'C:\\\\Users\\\\galva\\\\Desktop\\\\DineWise'; npm install\\\"\"",
+			"isBackground": false
+		},
+		{
+			"label": "expo-start-lan",
+			"type": "shell",
+			"command": "bash -lc \"/mnt/c/Windows/System32/WindowsPowerShell/v1.0/powershell.exe -NoProfile -ExecutionPolicy Bypass -Command \\\"Set-Location 'C:\\\\Users\\\\galva\\\\Desktop\\\\DineWise'; $env:EXPO_PUBLIC_API_URL='http://192.168.12.48:8000'; npm exec --yes --package=@expo/cli expo start --lan -c\\\"\"",
+			"isBackground": true
+		},
+		{
+			"label": "expo-start-lan",
+			"type": "shell",
+			"command": "bash -lc \"/mnt/c/Windows/System32/WindowsPowerShell/v1.0/powershell.exe -NoProfile -ExecutionPolicy Bypass -Command \\\"Set-Location 'C:\\\\Users\\\\galva\\\\Desktop\\\\DineWise'; \\$env:EXPO_PUBLIC_API_URL='http://192.168.12.48:8000'; npm exec --yes --package=@expo/cli expo start --lan -c\\\"\"",
+			"isBackground": true
+		},
+		{
+			"label": "check-metro",
+			"type": "shell",
+			"command": "bash -lc \"ss -ltnp | grep -E ':8081|:19000|:19001' || true\"",
+			"isBackground": false
+		},
+		{
+			"label": "check-backend",
+			"type": "shell",
+			"command": "bash -lc \"ss -ltnp | grep ':8000' || true\"",
+			"isBackground": false
+		},
+		{
+			"label": "start-backend",
+			"type": "shell",
+			"command": "bash -lc \"cd /mnt/c/Users/galva/Desktop/DineWise/backend && source .venv/bin/activate && uvicorn main:app --host 0.0.0.0 --port 8000 --reload\"",
+			"isBackground": true
+		},
+		{
+			"label": "check-portproxy",
+			"type": "shell",
+			"command": "bash -lc \"/mnt/c/Windows/System32/WindowsPowerShell/v1.0/powershell.exe -NoProfile -ExecutionPolicy Bypass -Command \\\"netsh interface portproxy show all\\\"\"",
+			"isBackground": false
+		},
+		{
+			"label": "current-wsl-ip",
+			"type": "shell",
+			"command": "bash -lc \"hostname -I | awk '{print $1}'\"",
+			"isBackground": false
+		},
+		{
+			"label": "check-lan-backend",
+			"type": "shell",
+			"command": "bash -lc \"/mnt/c/Windows/System32/WindowsPowerShell/v1.0/powershell.exe -NoProfile -ExecutionPolicy Bypass -Command \\\"try { (Invoke-WebRequest -UseBasicParsing http://192.168.12.48:8000/).Content } catch { Write-Error $_; exit 1 }\\\"\"",
+			"isBackground": false
+		},
+		{
+			"label": "check-lan-backend-2",
+			"type": "shell",
+			"command": "bash -lc \"/mnt/c/Windows/System32/WindowsPowerShell/v1.0/powershell.exe -NoProfile -ExecutionPolicy Bypass -Command \\\"(Invoke-WebRequest -UseBasicParsing http://192.168.12.48:8000/).Content\\\"\"",
+			"isBackground": false
+		},
+		{
+			"label": "expo-verify-after-venv-block",
+			"type": "shell",
+			"command": "bash -lc \"/mnt/c/Windows/System32/WindowsPowerShell/v1.0/powershell.exe -NoProfile -ExecutionPolicy Bypass -Command \\\"Set-Location 'C:\\\\Users\\\\galva\\\\Desktop\\\\DineWise'; \\$env:EXPO_PUBLIC_API_URL='http://192.168.12.48:8000'; npm exec --yes --package=@expo/cli expo start --lan -c\\\"\"",
+			"isBackground": true
+		},
+		{
+			"label": "backend-lan-health",
+			"type": "shell",
+			"command": "bash -lc \"/mnt/c/Windows/System32/WindowsPowerShell/v1.0/powershell.exe -NoProfile -ExecutionPolicy Bypass -Command \\\"(Invoke-WebRequest -UseBasicParsing http://192.168.12.48:8000/).Content\\\"\"",
+			"isBackground": false
+		}
+	]
+}
