@@ -1,4 +1,3 @@
-import hashlib
 import json
 import os
 import re
@@ -9,6 +8,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from dotenv import load_dotenv
 import google.genai as genai
+from google.genai import types as genai_types
 
 
 class ThemeRequest(BaseModel):
@@ -29,11 +29,6 @@ def normalize_school_name(school_name: str) -> str:
     return normalized
 
 
-def hash_color(seed: str) -> str:
-    digest = hashlib.sha256(seed.encode("utf-8")).hexdigest()
-    return f"#{digest[:6]}"
-
-
 def fetch_university_domain(school_name: str) -> str | None:
     try:
         encoded = urllib.parse.quote(school_name)
@@ -49,31 +44,38 @@ def fetch_university_domain(school_name: str) -> str | None:
 
 def fetch_university_info_from_gemini(school_name: str) -> dict | None:
     prompt = (
-        f'For the university "{school_name}", reply ONLY with a JSON object — no markdown, no extra text:\n'
+        f'Search the web for "{school_name}" official school colors (brand/athletics guide) and its '
+        f'official campus dining services website to find the REAL, CURRENTLY-NAMED meal plan options.\n'
+        'After researching, reply with a short explanation followed by ONE JSON object on its own line — '
+        'the JSON must not contain markdown formatting:\n'
         '{\n'
         '  "background": "#RRGGBB",\n'
         '  "backgroundElement": "#RRGGBB",\n'
         '  "text": "#ffffff or #000000",\n'
-        '  "dining_systems": ["Plan name 1", "Plan name 2"],\n'
+        '  "dining_systems": ["Exact plan name 1", "Exact plan name 2"],\n'
         '  "dining_summary": "One sentence about how campus dining works there.",\n'
         '  "known": true\n'
         '}\n'
         'Rules:\n'
-        '- background: official primary brand/athletic color (typically the darker one)\n'
-        '- backgroundElement: official secondary/accent brand color (typically the brighter one)\n'
+        '- background/backgroundElement: the two official school brand colors, verified from search results\n'
         '- text: #ffffff if background is dark, #000000 if light\n'
-        '- dining_systems: actual named dining currency types used at this school\n'
-        '- known: false if you do not recognise this as a real university, then return {"known": false}'
+        '- dining_systems: only the actual, currently-named meal plan products offered by this school\'s dining '
+        'services (e.g. as listed on their dining website) — do not invent generic names like "Meal plan"\n'
+        '- known: false if you cannot find a real university matching this name, then return {"known": false}'
     )
 
     hex_re = re.compile(r'^#[0-9a-fA-F]{6}$')
     if not gemini_client:
         return None
+    search_config = genai_types.GenerateContentConfig(
+        tools=[genai_types.Tool(google_search=genai_types.GoogleSearch())],
+    )
     for model_name in ["gemini-2.5-flash", "gemini-2.0-flash", "gemini-1.5-flash"]:
         try:
             response = gemini_client.models.generate_content(
                 model=model_name,
                 contents=prompt,
+                config=search_config,
             )
             text = response.text or ""
             start, end = text.find("{"), text.rfind("}")
@@ -84,22 +86,25 @@ def fetch_university_info_from_gemini(school_name: str) -> dict | None:
                 return None
             bg = data.get("background", "")
             be = data.get("backgroundElement", "")
-            txt = data.get("text", "#ffffff")
+            txt = data.get("text", "")
             if hex_re.match(bg) and hex_re.match(be) and hex_re.match(txt):
                 return {
                     "background": bg,
                     "backgroundElement": be,
                     "text": txt,
-                    "dining_systems": data.get("dining_systems", ["Meal plan", "Dining dollars"]),
-                    "dining_system_summary": data.get("dining_summary", ""),
+                    "dining_systems": [
+                        item.strip() for item in data.get("dining_systems", [])
+                        if isinstance(item, str) and item.strip()
+                    ],
+                    "dining_system_summary": (data.get("dining_summary") or "").strip(),
                 }
         except Exception:
             continue
     return None
 
 
-def build_university_theme(school_name: str) -> dict:
-    normalized = normalize_school_name(school_name)
+def build_university_theme(school_name: str) -> dict | None:
+    _ = normalize_school_name(school_name)
 
     # Real-time: ask Gemini for brand colors and dining info
     info = fetch_university_info_from_gemini(school_name)
@@ -109,25 +114,12 @@ def build_university_theme(school_name: str) -> dict:
     if domain:
         logo_url: str | None = f"https://logo.clearbit.com/{domain}"
     else:
-        trimmed = normalized.strip()
-        encoded = re.sub(r"\s+", "+", trimmed) if trimmed else "school"
-        bg_hex = hash_color(normalized + "logo").lstrip("#")
-        logo_url = f"https://ui-avatars.com/api/?name={encoded}&background={bg_hex}&color=ffffff&size=256" if trimmed else None
+        logo_url = None
 
     if info:
         return {**info, "logo_url": logo_url}
 
-    # Fallback: deterministic hash colors for unrecognised schools
-    primary = hash_color(normalized + "primary")
-    secondary = hash_color(normalized + "secondary")
-    return {
-        "background": primary,
-        "backgroundElement": secondary,
-        "text": "#ffffff" if int(primary[1:], 16) < 0x888888 else "#000000",
-        "logo_url": logo_url,
-        "dining_systems": ["Meal plan", "Dining dollars"],
-        "dining_system_summary": "This university likely uses a meal plan plus dining dollars for campus dining.",
-    }
+    return None
 
 root_dir = os.path.dirname(__file__)
 load_dotenv(os.path.join(root_dir, '.env'))
@@ -157,6 +149,17 @@ class UserInput(BaseModel):
     delivery_service: str | None = None
 
 
+class MealPlanResolveRequest(BaseModel):
+    school: str | None = None
+    plan_name: str
+
+
+class MealPlanResolveResponse(BaseModel):
+    resolved_plan: str
+    summary: str
+    source_url: str | None = None
+
+
 def strip_markdown(text: str) -> str:
     text = re.sub(r'\*\*(.+?)\*\*', r'\1', text)
     text = re.sub(r'\*(.+?)\*', r'\1', text)
@@ -164,21 +167,54 @@ def strip_markdown(text: str) -> str:
     return text.strip()
 
 
-def build_fallback_suggestion(data: UserInput) -> dict:
-    context_text = data.context or "a busy day"
-    plan_text = data.meal_plan_status or "your meal plan"
-    savings = max(4.0, round((data.balance or 0) * 0.2, 2))
-    suggestion = (
-        f"Try a campus dining hall combo meal or a grocery grab-and-go option instead of delivery. "
-        f"It fits your {data.craving} craving and is usually about ${savings:.2f} cheaper than a delivery order."
-    )
-    return {
-        "suggestion": suggestion,
-        "savings_estimate": f"~${savings:.2f} saved",
-        "why_it_matches": (
-            f"This works well for {context_text} and uses {plan_text} more efficiently."
-        ),
-    }
+def resolve_meal_plan_from_internet(school: str, plan_name: str) -> dict:
+    query_parts = [plan_name.strip()]
+    if school.strip():
+        query_parts.insert(0, school.strip())
+    query_parts.append("meal plan")
+    query = " ".join(query_parts)
+
+    try:
+        encoded = urllib.parse.quote(query)
+        url = (
+            "https://en.wikipedia.org/w/api.php"
+            f"?action=opensearch&search={encoded}&limit=1&namespace=0&format=json"
+        )
+        with urllib.request.urlopen(url, timeout=6) as resp:
+            data = json.loads(resp.read().decode("utf-8"))
+
+        titles = data[1] if len(data) > 1 else []
+        descriptions = data[2] if len(data) > 2 else []
+        links = data[3] if len(data) > 3 else []
+
+        title = titles[0] if titles else plan_name
+        description = descriptions[0] if descriptions else ""
+        source_url = links[0] if links else None
+
+        if description:
+            summary = (
+                f"Using internet lookup: {description}. "
+                f"Saved for {school.strip() or 'your school'} as {title}."
+            )
+        else:
+            summary = (
+                f"Saved custom meal plan '{plan_name}' for {school.strip() or 'your school'}. "
+                "Internet lookup did not return a detailed description."
+            )
+
+        return {
+            "resolved_plan": title,
+            "summary": summary,
+            "source_url": source_url,
+        }
+    except Exception:
+        return {
+            "resolved_plan": plan_name,
+            "summary": (
+                f"Saved custom meal plan '{plan_name}' for {school.strip() or 'your school'} with fallback mode."
+            ),
+            "source_url": None,
+        }
 
 
 @app.get("/")
@@ -191,15 +227,23 @@ async def get_theme(request: ThemeRequest):
     if not request.school or not request.school.strip():
         raise HTTPException(status_code=400, detail="School name is required")
     theme = build_university_theme(request.school)
+    if theme is None:
+        raise HTTPException(
+            status_code=503,
+            detail="Unable to fetch dynamic university theme and dining data for this school right now.",
+        )
     return theme
 
 
 @app.post("/nudge")
 async def get_nudge(data: UserInput):
     service_note = f" They usually order via {data.delivery_service}." if data.delivery_service else ""
+    context_text = (data.context or "").strip()
+    meal_plan_status_text = (data.meal_plan_status or "").strip()
+    delivery_frequency_text = (data.delivery_frequency or "").strip()
     prompt = (
-        f"Student has ${data.balance:.2f} left, wants {data.craving}, and is in {data.context or 'a busy campus moment'}. "
-        f"Their meal plan status is {data.meal_plan_status or 'unknown'} and their delivery frequency is {data.delivery_frequency or 'unknown'}."
+        f"Student has ${data.balance:.2f} left, wants {data.craving}, and is in {context_text}. "
+        f"Their meal plan status is {meal_plan_status_text} and their delivery frequency is {delivery_frequency_text}."
         f"{service_note}"
         " Give one practical, low-cost campus dining suggestion and explain briefly why it is a better value than delivery."
     )
@@ -209,7 +253,7 @@ async def get_nudge(data: UserInput):
     response = None
 
     if not gemini_client:
-        return build_fallback_suggestion(data)
+        raise HTTPException(status_code=503, detail="Gemini is unavailable. Dynamic nudge generation cannot run right now.")
 
     for model_name in model_candidates:
         try:
@@ -233,3 +277,12 @@ async def get_nudge(data: UserInput):
             f"This fits {data.context or 'your current situation'} and uses your meal plan more efficiently."
         ),
     }
+
+
+@app.post("/meal-plan/resolve", response_model=MealPlanResolveResponse)
+async def resolve_meal_plan(data: MealPlanResolveRequest):
+    if not data.plan_name or not data.plan_name.strip():
+        raise HTTPException(status_code=400, detail="plan_name is required")
+
+    school_name = data.school or ""
+    return resolve_meal_plan_from_internet(school_name, data.plan_name.strip())
