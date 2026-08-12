@@ -1,5 +1,50 @@
 # DineWise DEVLOG
 
+## Update (2026-08-11)
+
+### Frontend UX and Flow Updates
+
+- Onboarding setup transitions were tuned to remove flash-like behavior and feel smoother.
+- Setup and edit meal-plan dropdown behavior was stabilized across re-entry/navigation.
+- Student level (undergraduate/graduate) is now a first-class input in onboarding and setup.
+- Delivery service in onboarding now uses a real dropdown with mainstream options and Other:
+  - DoorDash, Uber Eats, Grubhub, Postmates, Instacart, Other
+  - Selecting Other reveals custom text input.
+- Craving Check labels were clarified to reduce ambiguity:
+  - Meal plan status (qualitative)
+  - Budget outside meal plan (numeric free entry)
+
+### Nudge Experience Updates
+
+- Nudge UX was redesigned for faster scanning and less reading fatigue.
+- Backend prompt now requests concise, action-first output in structured JSON.
+- Frontend renders compact phrase-style nudge points instead of long paragraphs.
+- CTA text updated to Get quick nudge.
+
+### University Theme/Palette Updates
+
+- Theme contract now supports three main colors from backend:
+  - background (primary)
+  - secondary
+  - tertiary
+- Darkest of the three main colors is normalized to background.
+- Card color is normalized from the remaining palette colors.
+- Homepage accent usage was updated so key actions stay visible and distinct from page/card surfaces.
+- Quick nudge button now enforces a color distinct from both background and card.
+- Surprise me link and savings badge now follow the same distinct-color rule.
+
+### Backend Contract Changes
+
+- POST /theme response now includes secondary and tertiary fields in addition to background/backgroundElement/text.
+- Theme extraction prompt includes guidance for primary/secondary/tertiary university color roles.
+- Fallback normalization remains in place when color fields are missing/duplicated.
+
+### Validation Completed On 2026-08-11
+
+- TypeScript checks passed after each major UI/theme change.
+- backend/main.py syntax compile checks passed after backend contract updates.
+- No diagnostics remained in touched frontend/backend files after final passes.
+
 ## Current State (2026-08-10)
 
 ### Architecture
@@ -108,7 +153,7 @@ http://192.168.12.48:8000
 - Symptom: Theme request fails with service-unavailable.
   - Fix: Verify GEMINI_API_KEY exists in backend environment and backend process restarted.
 
-### What Was Completed Today
+### What Was Completed On 2026-08-10
 
 - Consolidated routing structure to avoid duplicate/competing home routes.
 - Implemented standalone meal-plan setup and custom-plan screens.

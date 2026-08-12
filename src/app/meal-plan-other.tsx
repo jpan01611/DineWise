@@ -3,38 +3,23 @@ import React from 'react';
 import { ActivityIndicator, Alert, Pressable, SafeAreaView, StyleSheet, Text, TextInput, View } from 'react-native';
 
 import { Spacing } from '@/constants/theme';
+import { useDiningPlan } from '@/context/dining-plan-context';
+import { fetchWithRetry } from '@/utils/backend-fetch';
 import { getBackendBaseUrl } from '@/utils/backend-url';
-import { contrastColor, normalizeHex } from '@/utils/theme-color';
+import { contrastColor } from '@/utils/theme-color';
 
 type Params = {
-  school?: string;
-  backgroundHex?: string;
-  backgroundElementHex?: string;
   setupFlow?: string;
 };
 
 export default function MealPlanOtherScreen() {
   const router = useRouter();
   const params = useLocalSearchParams<Params>();
+  const { school, universityTheme, setConfiguredDiningSession, setDiningSessionConfigured, setDiningSystemSummary } = useDiningPlan();
 
-  const school = typeof params.school === 'string' ? params.school : '';
-  const background = normalizeHex(typeof params.backgroundHex === 'string' ? params.backgroundHex : undefined);
-  const backgroundElement = normalizeHex(typeof params.backgroundElementHex === 'string' ? params.backgroundElementHex : undefined);
+  const background = universityTheme.background;
+  const backgroundElement = universityTheme.backgroundElement;
   const setupFlow = typeof params.setupFlow === 'string' ? params.setupFlow : 'dashboard';
-
-  if (!background || !backgroundElement) {
-    return (
-      <SafeAreaView style={styles.safeArea}>
-        <View style={styles.errorContainer}>
-          <Text style={styles.errorTitle}>Custom meal plan unavailable</Text>
-          <Text style={styles.errorBody}>Theme data is missing. Go back and fetch your school data again.</Text>
-          <Pressable style={styles.secondaryButton} onPress={() => router.back()}>
-            <Text style={styles.secondaryText}>Back</Text>
-          </Pressable>
-        </View>
-      </SafeAreaView>
-    );
-  }
 
   const [customPlan, setCustomPlan] = React.useState('');
   const [loading, setLoading] = React.useState(false);
@@ -52,19 +37,11 @@ export default function MealPlanOtherScreen() {
       if (!backendBaseUrl) {
         throw new Error('Backend URL unavailable. Set EXPO_PUBLIC_API_URL or relaunch Expo so host metadata is available.');
       }
-      const controller = new AbortController();
-      const timer = setTimeout(() => controller.abort(), 10000);
-      let response: Response;
-      try {
-        response = await fetch(`${backendBaseUrl}/meal-plan/resolve`, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ school, plan_name: value }),
-          signal: controller.signal,
-        });
-      } finally {
-        clearTimeout(timer);
-      }
+      const response = await fetchWithRetry(`${backendBaseUrl}/meal-plan/resolve`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ school, plan_name: value }),
+      }, { timeoutMs: 15000, retries: 1 });
 
       const data = await response.json();
       if (!response.ok) {
@@ -74,14 +51,10 @@ export default function MealPlanOtherScreen() {
       const resolvedPlan = (data.resolved_plan || value).toString();
       const summary = (data.summary || `Saved custom plan: ${resolvedPlan}`).toString();
 
-      router.replace({
-        pathname: '/(tabs)',
-        params: {
-          configuredPlan: resolvedPlan,
-          configuredSummary: summary,
-          setupFlow,
-        },
-      });
+      setConfiguredDiningSession(resolvedPlan);
+      setDiningSessionConfigured(true);
+      setDiningSystemSummary(summary);
+      router.dismissTo({ pathname: '/(tabs)', params: { setupFlow } });
     } catch (error) {
       Alert.alert('Save failed', String(error));
     } finally {
@@ -128,23 +101,6 @@ const styles = StyleSheet.create({
     flex: 1,
     justifyContent: 'center',
     padding: Spacing.three,
-  },
-  errorContainer: {
-    flex: 1,
-    justifyContent: 'center',
-    alignItems: 'center',
-    padding: Spacing.four,
-    gap: Spacing.two,
-  },
-  errorTitle: {
-    fontSize: 20,
-    fontWeight: '700',
-    textAlign: 'center',
-  },
-  errorBody: {
-    fontSize: 14,
-    textAlign: 'center',
-    opacity: 0.8,
   },
   card: {
     borderRadius: Spacing.four,
