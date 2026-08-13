@@ -1,9 +1,13 @@
 import json
 import os
 import re
+import hashlib
+import hmac
+import secrets
+from datetime import datetime, timezone
 import urllib.parse
 import urllib.request
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, Header, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from dotenv import load_dotenv
@@ -25,6 +29,9 @@ class ThemeResponse(BaseModel):
     logo_url: str | None = None
     dining_systems: list[str]
     dining_system_summary: str
+
+
+THEME_CACHE: dict[str, dict] = {}
 
 
 def normalize_school_name(school_name: str) -> str:
@@ -83,15 +90,50 @@ def normalize_palette_colors(background: str, secondary: str, tertiary: str, tex
             unique_colors.append('#9CA3AF')
 
     ordered = sorted(unique_colors[:3], key=relative_luminance)
-    normalized_background = ordered[0]
-    middle = ordered[1]
-    lightest = ordered[2]
+
+    # Keep dark themes possible, but avoid defaulting to near-black page backgrounds
+    # when a different brand color is available.
+    non_black_candidates = [
+        color for color in ordered
+        if relative_luminance(color) > 0.03
+    ]
+    normalized_background = non_black_candidates[0] if non_black_candidates else ordered[0]
+
+    remaining = [color for color in ordered if color != normalized_background]
+    middle = remaining[0] if remaining else normalized_background
+    lightest = remaining[-1] if remaining else normalized_background
 
     return {
         'background': normalized_background,
         'backgroundElement': lightest,
         'secondary': middle,
         'tertiary': lightest,
+    }
+
+
+def build_fallback_theme(school_name: str, student_level: str | None = None) -> dict:
+    normalized_school = normalize_school_name(school_name)
+    digest = hashlib.sha256(f'{normalized_school}:{student_level or ""}'.encode('utf-8')).hexdigest()
+    seed = int(digest[:8], 16)
+
+    palette_groups = [
+        ('#0F172A', '#1E293B', '#334155', '#F8FAFC'),
+        ('#111827', '#374151', '#6B7280', '#F9FAFB'),
+        ('#1E1B4B', '#312E81', '#4F46E5', '#F8FAFC'),
+        ('#3B0764', '#6B21A8', '#A855F7', '#F9FAFB'),
+        ('#7F1D1D', '#991B1B', '#DC2626', '#FFF7ED'),
+        ('#064E3B', '#065F46', '#10B981', '#ECFDF5'),
+    ]
+    background, background_element, secondary, text = palette_groups[seed % len(palette_groups)]
+
+    return {
+        'background': background,
+        'backgroundElement': background_element,
+        'secondary': secondary,
+        'tertiary': secondary,
+        'text': text,
+        'dining_systems': [],
+        'dining_system_summary': 'Live dining data is still loading for this campus. The default theme is being used for now.',
     }
 
 
@@ -182,7 +224,11 @@ def fetch_university_info_from_gemini(school_name: str, student_level: str | Non
 
 
 def build_university_theme(school_name: str, student_level: str | None = None) -> dict | None:
-    _ = normalize_school_name(school_name)
+    cache_key = f'{normalize_school_name(school_name)}::{student_level or ""}'
+
+    cached_theme = THEME_CACHE.get(cache_key)
+    if cached_theme:
+        return cached_theme
 
     # Real-time: ask Gemini for brand colors and dining info
     info = fetch_university_info_from_gemini(school_name, student_level)
@@ -195,9 +241,14 @@ def build_university_theme(school_name: str, student_level: str | None = None) -
         logo_url = None
 
     if info:
-        return {**info, "logo_url": logo_url}
+        theme = {**info, "logo_url": logo_url}
+        THEME_CACHE[cache_key] = theme
+        return theme
 
-    return None
+    fallback_theme = build_fallback_theme(school_name, student_level)
+    fallback_theme['logo_url'] = logo_url
+    THEME_CACHE[cache_key] = fallback_theme
+    return fallback_theme
 
 root_dir = os.path.dirname(__file__)
 load_dotenv(os.path.join(root_dir, '.env'))
@@ -225,6 +276,8 @@ class UserInput(BaseModel):
     meal_plan_status: str | None = None
     delivery_frequency: str | None = None
     delivery_service: str | None = None
+    recent_followed: int | None = None
+    recent_logged: int | None = None
 
 
 class MealPlanResolveRequest(BaseModel):
@@ -236,6 +289,140 @@ class MealPlanResolveResponse(BaseModel):
     resolved_plan: str
     summary: str
     source_url: str | None = None
+
+
+class AuthSignupRequest(BaseModel):
+    username: str | None = None
+    email: str | None = None
+    password: str
+    name: str | None = None
+
+
+class AuthLoginRequest(BaseModel):
+    username: str | None = None
+    email: str | None = None
+    password: str
+
+
+class AuthResponse(BaseModel):
+    token: str
+    user_email: str
+    user_username: str | None = None
+    user_name: str | None = None
+
+
+class AuthDeleteResponse(BaseModel):
+    message: str
+
+
+USERS_DB_PATH = os.path.join(root_dir, 'users.json')
+
+
+def _normalize_username(username: str) -> str:
+    return (username or '').strip().lower()
+
+
+def _is_valid_username(username: str) -> bool:
+    normalized = _normalize_username(username)
+    return bool(re.fullmatch(r'[a-z0-9._-]{3,32}', normalized))
+
+
+def _utc_now_iso() -> str:
+    return datetime.now(timezone.utc).isoformat()
+
+
+def _load_users_db() -> dict:
+    try:
+        if not os.path.exists(USERS_DB_PATH):
+            return {'users': [], 'sessions': []}
+        with open(USERS_DB_PATH, 'r', encoding='utf-8') as f:
+            data = json.load(f)
+        if not isinstance(data, dict):
+            return {'users': [], 'sessions': []}
+        users = data.get('users', [])
+        sessions = data.get('sessions', [])
+        return {
+            'users': users if isinstance(users, list) else [],
+            'sessions': sessions if isinstance(sessions, list) else [],
+        }
+    except Exception:
+        return {'users': [], 'sessions': []}
+
+
+def _save_users_db(data: dict) -> None:
+    with open(USERS_DB_PATH, 'w', encoding='utf-8') as f:
+        json.dump(data, f, indent=2)
+
+
+def _hash_password(password: str, salt_hex: str | None = None) -> tuple[str, str]:
+    salt = bytes.fromhex(salt_hex) if salt_hex else os.urandom(16)
+    digest = hashlib.pbkdf2_hmac('sha256', password.encode('utf-8'), salt, 120_000)
+    return salt.hex(), digest.hex()
+
+
+def _verify_password(password: str, salt_hex: str, digest_hex: str) -> bool:
+    _, candidate = _hash_password(password, salt_hex)
+    return hmac.compare_digest(candidate, digest_hex)
+
+
+def _find_user(users: list[dict], username: str) -> dict | None:
+    target = _normalize_username(username)
+    for user in users:
+        if _normalize_username(str(user.get('email', ''))) == target:
+            return user
+    return None
+
+
+def _issue_session(db: dict, username: str) -> str:
+    token = secrets.token_urlsafe(32)
+    db['sessions'].append({
+        'token': token,
+        'email': _normalize_username(username),
+        'created_at': _utc_now_iso(),
+    })
+    return token
+
+
+def _get_email_for_token(token: str) -> str | None:
+    db = _load_users_db()
+    for session in db.get('sessions', []):
+        if str(session.get('token', '')) == token:
+            return _normalize_username(str(session.get('email', '')))
+    return None
+
+
+def _require_authenticated_email(authorization: str | None) -> str:
+    if not authorization:
+        raise HTTPException(status_code=401, detail='Missing Authorization header.')
+
+    prefix = 'Bearer '
+    if not authorization.startswith(prefix):
+        raise HTTPException(status_code=401, detail='Invalid Authorization scheme.')
+
+    token = authorization[len(prefix):].strip()
+    if not token:
+        raise HTTPException(status_code=401, detail='Missing bearer token.')
+
+    email = _get_email_for_token(token)
+    if not email:
+        raise HTTPException(status_code=401, detail='Invalid or expired session token.')
+    return email
+
+
+def _delete_account_by_email(email: str) -> None:
+    target = _normalize_username(email)
+    db = _load_users_db()
+
+    db['users'] = [
+        user for user in db.get('users', [])
+        if _normalize_username(str(user.get('email', ''))) != target
+    ]
+    db['sessions'] = [
+        session for session in db.get('sessions', [])
+        if _normalize_username(str(session.get('email', ''))) != target
+    ]
+
+    _save_users_db(db)
 
 
 def strip_markdown(text: str) -> str:
@@ -256,6 +443,277 @@ def extract_json_object(text: str) -> dict | None:
     except Exception:
         return None
     return None
+
+
+def _normalize_text(value: str | None) -> str:
+    return (value or '').strip().lower()
+
+
+def _contains_delivery_reference(text: str) -> bool:
+    lowered = _normalize_text(text)
+    delivery_terms = [
+        'doordash',
+        'uber eats',
+        'ubereats',
+        'grubhub',
+        'postmates',
+        'instacart',
+        'delivery',
+    ]
+    return any(term in lowered for term in delivery_terms)
+
+
+def _contains_location_claim(text: str) -> bool:
+    lowered = _normalize_text(text)
+    location_terms = [
+        'dining hall',
+        'dining commons',
+        'cafeteria',
+        'food court',
+        'student center',
+        'closest',
+        'nearest',
+        'near',
+        'next to',
+        'across from',
+        'walk to',
+        'minutes away',
+        'north campus',
+        'south campus',
+        'east campus',
+        'west campus',
+    ]
+    return any(term in lowered for term in location_terms)
+
+
+def _contains_hours_or_menu_claim(text: str) -> bool:
+    lowered = _normalize_text(text)
+    service_terms = [
+        'open until',
+        'opens at',
+        'closes at',
+        'open now',
+        'hours',
+        'today\'s menu',
+        'todays menu',
+        'menu today',
+        'serving today',
+        'special today',
+        'daily special',
+        'specials',
+    ]
+    return any(term in lowered for term in service_terms)
+
+
+def _context_includes_service_facts(context_text: str | None) -> bool:
+    lowered = _normalize_text(context_text)
+    context_markers = [
+        'open',
+        'close',
+        'hours',
+        'menu',
+        'special',
+        'serving',
+    ]
+    return any(marker in lowered for marker in context_markers)
+
+
+def _parse_clock_time_label(label: str) -> tuple[int, int] | None:
+    match = re.match(r'^\s*(\d{1,2})(?::(\d{2}))?\s*(am|pm)\s*$', label.strip(), re.IGNORECASE)
+    if not match:
+        return None
+
+    hour = int(match.group(1))
+    minute = int(match.group(2) or '0')
+    suffix = match.group(3).lower()
+
+    if hour < 1 or hour > 12 or minute < 0 or minute > 59:
+        return None
+
+    hour_24 = hour % 12
+    if suffix == 'pm':
+        hour_24 += 12
+    return hour_24, minute
+
+
+def _minutes_until_time(label: str, now_local: datetime) -> int | None:
+    parsed = _parse_clock_time_label(label)
+    if not parsed:
+        return None
+
+    hour_24, minute = parsed
+    target = now_local.replace(hour=hour_24, minute=minute, second=0, microsecond=0)
+    delta_seconds = int((target - now_local).total_seconds())
+    return delta_seconds // 60
+
+
+def _extract_timing_facts(context_text: str | None) -> dict[str, int]:
+    lowered = _normalize_text(context_text)
+    facts = {
+        'closed_mentions': 0,
+        'soon_closing_mentions': 0,
+        'open_mentions': 0,
+    }
+
+    if not lowered:
+        return facts
+
+    facts['closed_mentions'] += len(re.findall(r'\b(closed|already closed|not open)\b', lowered))
+    facts['soon_closing_mentions'] += len(re.findall(r'\b(closing soon|about to close|closing in \d+\s*(min|mins|minutes))\b', lowered))
+    facts['open_mentions'] += len(re.findall(r'\b(open now|currently open|open)\b', lowered))
+
+    now_local = datetime.now()
+    for match in re.finditer(r'\b(?:closes at|open until)\s*(\d{1,2}(?::\d{2})?\s*(?:am|pm))\b', lowered):
+        minutes_until = _minutes_until_time(match.group(1), now_local)
+        if minutes_until is None:
+            continue
+        if minutes_until <= 0:
+            facts['closed_mentions'] += 1
+        elif minutes_until <= 45:
+            facts['soon_closing_mentions'] += 1
+        else:
+            facts['open_mentions'] += 1
+
+    return facts
+
+
+def _apply_time_sensitive_guardrails(
+    quick_nudge: str | None,
+    backup_option: str | None,
+    concise_why: str | None,
+    weekly_avoidable: float,
+    timing_facts: dict[str, int],
+) -> tuple[str | None, str | None, str | None]:
+    closed_mentions = timing_facts.get('closed_mentions', 0)
+    soon_closing_mentions = timing_facts.get('soon_closing_mentions', 0)
+    open_mentions = timing_facts.get('open_mentions', 0)
+
+    safe_quick = quick_nudge
+    safe_backup = backup_option
+    safe_why = concise_why
+
+    # If user context indicates closures and no clearly open alternatives,
+    # avoid recommending a hall trip right now.
+    if closed_mentions > 0 and open_mentions == 0 and soon_closing_mentions == 0:
+        safe_quick = 'Your halls look closed now; avoid a wasted trip.'
+        safe_backup = f'Skip delivery if possible; save ~${weekly_avoidable:.1f}/week.'
+        safe_why = 'Use confirmed opening windows before heading out.'
+        return safe_quick, safe_backup, safe_why
+
+    # If user context says a hall is about to close, make urgency explicit.
+    if soon_closing_mentions > 0:
+        safe_quick = 'If your hall closes soon, go now.'
+        safe_backup = f'If it closes first, use your best open option and save ~${weekly_avoidable:.1f}/week.'
+        safe_why = 'Your timing info suggests limited open-window minutes.'
+
+    return safe_quick, safe_backup, safe_why
+
+
+def _sanitize_location_copy(
+    quick_nudge: str | None,
+    backup_option: str | None,
+    concise_why: str | None,
+    weekly_avoidable: float,
+    allow_service_fact_claims: bool,
+) -> tuple[str | None, str | None, str | None]:
+    safe_quick = quick_nudge
+    safe_backup = backup_option
+    safe_why = concise_why
+
+    if quick_nudge and _contains_location_claim(quick_nudge):
+        safe_quick = 'Pick your go-to hall and use swipes first.'
+
+    if backup_option and _contains_location_claim(backup_option):
+        safe_backup = f'Skip one delivery, save ~${weekly_avoidable:.1f}/week.'
+
+    if concise_why and _contains_location_claim(concise_why):
+        safe_why = 'You know your campus best; this keeps spending tighter.'
+
+    if not allow_service_fact_claims:
+        if safe_quick and _contains_hours_or_menu_claim(safe_quick):
+            safe_quick = 'Use your meal plan at your preferred hall today.'
+
+        if safe_backup and _contains_hours_or_menu_claim(safe_backup):
+            safe_backup = f'Skip one delivery, save ~${weekly_avoidable:.1f}/week.'
+
+        if safe_why and _contains_hours_or_menu_claim(safe_why):
+            safe_why = 'Hours and specials vary; you know the best live options.'
+
+    return safe_quick, safe_backup, safe_why
+
+
+def _allow_delivery_as_primary(meal_plan_status: str | None, balance: float, delivery_frequency: str | None) -> bool:
+    status = _normalize_text(meal_plan_status)
+    freq = _normalize_text(delivery_frequency)
+    return status == 'almost empty' and balance >= 20 and freq in {'often', 'daily'}
+
+
+def _follow_through_rate(data: UserInput) -> float | None:
+    logged = data.recent_logged or 0
+    followed = data.recent_followed or 0
+    if logged <= 0:
+        return None
+    return max(0.0, min(1.0, followed / logged))
+
+
+def _estimate_weekly_avoidable_spend(
+    meal_plan_status: str | None,
+    delivery_frequency: str | None,
+    follow_through: float | None = None,
+) -> float:
+    freq_weight = {
+        'rarely': 3.5,
+        'sometimes': 6.5,
+        'often': 10.5,
+        'daily': 14.5,
+    }
+    status_weight = {
+        'plenty left': 1.2,
+        'fair amount': 1.0,
+        'running low': 0.8,
+        'almost empty': 0.55,
+    }
+    freq_base = freq_weight.get(_normalize_text(delivery_frequency), 6.5)
+    status_factor = status_weight.get(_normalize_text(meal_plan_status), 1.0)
+    estimate = freq_base * status_factor
+    if follow_through is not None:
+        # Students who rarely follow through leave more spend on the table.
+        estimate *= 0.85 + (1.0 - follow_through) * 0.3
+    return round(max(4.0, estimate), 1)
+
+
+def _build_confidence_metadata(data: UserInput, context_text: str) -> tuple[str, list[str], str]:
+    evidence_inputs: list[str] = []
+
+    if data.craving.strip():
+        evidence_inputs.append(f'Craving: {data.craving.strip()}')
+    if (data.meal_plan_status or '').strip():
+        evidence_inputs.append(f'Meal plan: {(data.meal_plan_status or '').strip()}')
+    if (data.delivery_frequency or '').strip():
+        evidence_inputs.append(f'Delivery habit: {(data.delivery_frequency or '').strip()}')
+    if data.balance > 0:
+        evidence_inputs.append(f'Budget: ${data.balance:.2f}')
+    if (data.recent_logged or 0) > 0:
+        evidence_inputs.append(f'Follow-through: {data.recent_followed or 0}/{data.recent_logged}')
+    if context_text:
+        evidence_inputs.append('Context: student-provided')
+
+    if context_text and len(evidence_inputs) >= 4:
+        confidence = 'Student-confirmed'
+    elif len(evidence_inputs) >= 3:
+        confidence = 'Inferred from habits'
+    else:
+        confidence = 'Unknown'
+
+    truth_policy = 'No guessed hall names, hours, menus, or specials.'
+    return confidence, evidence_inputs[:4], truth_policy
+
+
+def _build_campus_first_fallback(data: UserInput, weekly_avoidable: float) -> tuple[str, str, list[str]]:
+    quick_nudge = 'Use your meal plan tonight.'
+    backup_option = f'Skip one delivery, save ~${weekly_avoidable:.1f}/week.'
+    why = 'You know your campus best; swipes protect your budget.'
+    return quick_nudge, why, [quick_nudge, backup_option, why]
 
 
 def resolve_meal_plan_from_internet(school: str, plan_name: str) -> dict:
@@ -314,32 +772,125 @@ async def root():
 
 
 @app.post("/theme", response_model=ThemeResponse)
-async def get_theme(request: ThemeRequest):
+async def get_theme(request: ThemeRequest, authorization: str | None = Header(default=None)):
+    _require_authenticated_email(authorization)
     if not request.school or not request.school.strip():
         raise HTTPException(status_code=400, detail="School name is required")
     theme = build_university_theme(request.school, request.student_level)
-    if theme is None:
-        raise HTTPException(
-            status_code=503,
-            detail="Unable to fetch dynamic university theme and dining data for this school right now.",
-        )
     return theme
 
 
+@app.post('/auth/signup', response_model=AuthResponse)
+async def auth_signup(data: AuthSignupRequest):
+    username_source = data.username or data.email or ''
+    username = _normalize_username(username_source)
+    password = data.password or ''
+    user_name = (data.name or '').strip() or None
+
+    if not _is_valid_username(username):
+        raise HTTPException(status_code=400, detail='Username must be 3-32 chars and use letters, numbers, ., _, or -.')
+    if len(password) < 6:
+        raise HTTPException(status_code=400, detail='Password must be at least 6 characters.')
+
+    db = _load_users_db()
+    if _find_user(db['users'], username):
+        raise HTTPException(status_code=409, detail='An account with this username already exists.')
+
+    salt_hex, digest_hex = _hash_password(password)
+    db['users'].append({
+        'email': username,
+        'password_salt': salt_hex,
+        'password_hash': digest_hex,
+        'name': user_name,
+        'created_at': _utc_now_iso(),
+    })
+    token = _issue_session(db, username)
+    _save_users_db(db)
+
+    return {
+        'token': token,
+        'user_email': username,
+        'user_username': username,
+        'user_name': user_name,
+    }
+
+
+@app.post('/auth/login', response_model=AuthResponse)
+async def auth_login(data: AuthLoginRequest):
+    username = _normalize_username(data.username or data.email or '')
+    password = data.password or ''
+
+    if not username:
+        raise HTTPException(status_code=400, detail='Username is required.')
+
+    db = _load_users_db()
+    user = _find_user(db['users'], username)
+    if not user:
+        raise HTTPException(status_code=401, detail='Invalid username or password.')
+
+    salt_hex = str(user.get('password_salt', ''))
+    digest_hex = str(user.get('password_hash', ''))
+    if not salt_hex or not digest_hex or not _verify_password(password, salt_hex, digest_hex):
+        raise HTTPException(status_code=401, detail='Invalid username or password.')
+
+    token = _issue_session(db, username)
+    _save_users_db(db)
+
+    return {
+        'token': token,
+        'user_email': username,
+        'user_username': username,
+        'user_name': user.get('name'),
+    }
+
+
+@app.delete('/auth/account', response_model=AuthDeleteResponse)
+async def auth_delete_account(authorization: str | None = Header(default=None)):
+    email = _require_authenticated_email(authorization)
+    _delete_account_by_email(email)
+    return {'message': 'Account deleted successfully.'}
+
+
 @app.post("/nudge")
-async def get_nudge(data: UserInput):
+async def get_nudge(data: UserInput, authorization: str | None = Header(default=None)):
+    _require_authenticated_email(authorization)
     service_note = f" They usually order via {data.delivery_service}." if data.delivery_service else ""
     context_text = (data.context or "").strip()
     meal_plan_status_text = (data.meal_plan_status or "").strip()
     delivery_frequency_text = (data.delivery_frequency or "").strip()
+    follow_through = _follow_through_rate(data)
+    if follow_through is None:
+        follow_through_note = ""
+    else:
+        follow_through_note = (
+            f" They followed the meal-plan-first move {data.recent_followed or 0} of the last"
+            f" {data.recent_logged} logged decisions."
+            + (
+                " Their follow-through is strong, so reinforce the streak in one short phrase."
+                if follow_through >= 0.6
+                else " Their follow-through is weak, so make the move feel easy and low-effort."
+            )
+        )
     prompt = (
         f"Student has ${data.balance:.2f} left, wants {data.craving}, and is in {context_text}. "
         f"Their meal plan status is {meal_plan_status_text} and their delivery frequency is {delivery_frequency_text}."
         f"{service_note}"
+        f"{follow_through_note}"
         " Give concise, action-first advice for a mobile app card. "
+        " The product goal is meal-plan optimization and reducing unnecessary delivery spend. "
+        " By default, prioritize campus dining/meal plan usage as the best move. "
+        " Only make delivery the primary recommendation if meal plan is almost empty and external budget is strong. "
+        " Never guess dining hall names, routes, or proximity claims. "
+        " Students already know their best dining locations; do not pretend to know them. "
+        " If location matters, tell the student to choose their preferred hall. "
+        " Never guess dining hours, today\'s menu, or specials of the day. "
+        " Only mention hours/menu/specials if those exact facts are explicitly provided in student context. "
+        " If student-provided context indicates halls are closed, do not recommend going there now. "
+        " If student-provided context indicates halls are about to close, explicitly say to go soon. "
         "Return ONLY one JSON object with no markdown and no extra text: "
         '{"quick_nudge":"...","backup_option":"...","why":"..."}. '
         "Rules: quick_nudge max 12 words, backup_option max 10 words, why max 12 words. "
+        " Include a concrete money-saving angle when possible. "
         "Keep each line direct and specific."
     )
 
@@ -374,23 +925,65 @@ async def get_nudge(data: UserInput):
         backup_option = str(parsed.get('backup_option') or '').strip() or None
         concise_why = str(parsed.get('why') or '').strip() or None
 
+    weekly_avoidable = _estimate_weekly_avoidable_spend(
+        data.meal_plan_status,
+        data.delivery_frequency,
+        follow_through,
+    )
+    allow_delivery_primary = _allow_delivery_as_primary(
+        data.meal_plan_status,
+        data.balance,
+        data.delivery_frequency,
+    )
+    allow_service_fact_claims = _context_includes_service_facts(context_text)
+    timing_facts = _extract_timing_facts(context_text)
+
+    quick_nudge, backup_option, concise_why = _sanitize_location_copy(
+        quick_nudge,
+        backup_option,
+        concise_why,
+        weekly_avoidable,
+        allow_service_fact_claims,
+    )
+
+    if allow_service_fact_claims:
+        quick_nudge, backup_option, concise_why = _apply_time_sensitive_guardrails(
+            quick_nudge,
+            backup_option,
+            concise_why,
+            weekly_avoidable,
+            timing_facts,
+        )
+
+    if quick_nudge and _contains_delivery_reference(quick_nudge) and not allow_delivery_primary:
+        quick_nudge, concise_why, fallback_points = _build_campus_first_fallback(data, weekly_avoidable)
+        backup_option = fallback_points[1]
+    elif not quick_nudge:
+        quick_nudge, concise_why, fallback_points = _build_campus_first_fallback(data, weekly_avoidable)
+        backup_option = backup_option or fallback_points[1]
+
     suggestion = quick_nudge or raw_output
     why_text = concise_why or (
         f"Matches {data.context or 'your situation'} and beats delivery cost."
     )
     nudge_points = [item for item in [quick_nudge, backup_option, concise_why] if item]
+    confidence_label, evidence_inputs, truth_policy = _build_confidence_metadata(data, context_text)
 
     return {
         'suggestion': suggestion,
         'prompt': prompt,
-        'savings_estimate': f"~${max(4.0, round((data.balance or 0) * 0.2, 2)):.2f} saved",
+        'savings_estimate': f"~${weekly_avoidable:.1f}/week potential",
         'why_it_matches': why_text,
         'nudge_points': nudge_points,
+        'confidence_label': confidence_label,
+        'evidence_inputs': evidence_inputs,
+        'truth_policy': truth_policy,
     }
 
 
 @app.post("/meal-plan/resolve", response_model=MealPlanResolveResponse)
-async def resolve_meal_plan(data: MealPlanResolveRequest):
+async def resolve_meal_plan(data: MealPlanResolveRequest, authorization: str | None = Header(default=None)):
+    _require_authenticated_email(authorization)
     if not data.plan_name or not data.plan_name.strip():
         raise HTTPException(status_code=400, detail="plan_name is required")
 

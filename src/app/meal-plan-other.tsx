@@ -1,6 +1,7 @@
 import { useLocalSearchParams, useRouter } from 'expo-router';
 import React from 'react';
-import { ActivityIndicator, Alert, Pressable, SafeAreaView, StyleSheet, Text, TextInput, View } from 'react-native';
+import { ActivityIndicator, Alert, Pressable, StyleSheet, Text, TextInput, View } from 'react-native';
+import { SafeAreaView } from 'react-native-safe-area-context';
 
 import { Spacing } from '@/constants/theme';
 import { useDiningPlan } from '@/context/dining-plan-context';
@@ -15,7 +16,7 @@ type Params = {
 export default function MealPlanOtherScreen() {
   const router = useRouter();
   const params = useLocalSearchParams<Params>();
-  const { school, universityTheme, setConfiguredDiningSession, setDiningSessionConfigured, setDiningSystemSummary } = useDiningPlan();
+  const { authToken, school, universityTheme, setConfiguredDiningSession, setDiningSessionConfigured, setDiningSystemSummary } = useDiningPlan();
 
   const background = universityTheme.background;
   const backgroundElement = universityTheme.backgroundElement;
@@ -39,7 +40,10 @@ export default function MealPlanOtherScreen() {
       }
       const response = await fetchWithRetry(`${backendBaseUrl}/meal-plan/resolve`, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${authToken}`,
+        },
         body: JSON.stringify({ school, plan_name: value }),
       }, { timeoutMs: 15000, retries: 1 });
 

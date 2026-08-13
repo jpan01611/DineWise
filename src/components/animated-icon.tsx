@@ -1,6 +1,6 @@
 import { Image } from 'expo-image';
 import * as SplashScreen from 'expo-splash-screen';
-import { useState } from 'react';
+import React from 'react';
 import { Dimensions, StyleSheet, View } from 'react-native';
 import Animated, { Easing, Keyframe } from 'react-native-reanimated';
 import { scheduleOnRN } from 'react-native-worklets';
@@ -9,8 +9,29 @@ const INITIAL_SCALE_FACTOR = Dimensions.get('screen').height / 90;
 const DURATION = 600;
 
 export function AnimatedSplashOverlay() {
-  const [animate, setAnimate] = useState(false);
-  const [visible, setVisible] = useState(true);
+  const [animate, setAnimate] = React.useState(false);
+  const [visible, setVisible] = React.useState(true);
+  const isMountedRef = React.useRef(false);
+
+  React.useEffect(() => {
+    isMountedRef.current = true;
+
+    SplashScreen.hideAsync().finally(() => {
+      if (isMountedRef.current) {
+        setAnimate(true);
+      }
+    });
+
+    return () => {
+      isMountedRef.current = false;
+    };
+  }, []);
+
+  const hideOverlay = React.useCallback(() => {
+    if (isMountedRef.current) {
+      setVisible(false);
+    }
+  }, []);
 
   if (!visible) return null;
 
@@ -40,20 +61,14 @@ export function AnimatedSplashOverlay() {
       entering={splashKeyframe.duration(DURATION).withCallback((finished) => {
         'worklet';
         if (finished) {
-          scheduleOnRN(setVisible, false);
+          scheduleOnRN(hideOverlay);
         }
       })}
       style={styles.splashOverlay}>
       {image}
     </Animated.View>
   ) : (
-    <View
-      onLayout={() => {
-        SplashScreen.hideAsync().finally(() => {
-          setAnimate(true);
-        });
-      }}
-      style={styles.splashOverlay}>
+    <View style={styles.splashOverlay}>
       {image}
     </View>
   );

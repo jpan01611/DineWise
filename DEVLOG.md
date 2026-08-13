@@ -1,5 +1,75 @@
 # DineWise DEVLOG
 
+## Update (2026-08-12)
+
+### Outcome Logging Now Feeds Recommendations
+
+- "I followed this" / "I ordered delivery" were previously local-only vanity stats; they now influence output.
+- Frontend derives a follow-through rate from the last 7 logged outcomes.
+- Risk meter weighting shifts when follow-through data exists:
+  - status 0.40, delivery 0.28, budget 0.22, slip 0.10
+  - falls back to the original weights when nothing has been logged
+- Weekly avoidable waste increases slightly as slip rate rises.
+- POST /nudge now accepts optional `recent_followed` and `recent_logged` (backward compatible).
+- Backend uses follow-through to:
+  - add a factual line to the nudge prompt (never invented, derived from real counts)
+  - reinforce the streak when rate >= 0.6, or emphasize a low-effort move when below
+  - scale the weekly avoidable spend estimate
+  - surface a "Follow-through: X/Y" evidence chip feeding the confidence label
+
+### Home Screen UX
+
+- App icon now appears in a circular frame beside the DineWise title on the home header.
+- Replaced the leftover Expo placeholder animated icon in that slot.
+- Craving Check field order changed to: meal plan status, budget outside meal plan, vibe, delivery frequency, craving.
+- "Surprise me" moved to the Craving field header; the duplicate in the panel header was removed.
+- Generating a nudge now auto-collapses the Craving Check so results are visible without scrolling.
+- While a nudge is generating, the "Crave Something?" slot becomes a spinner plus "Finding your best move...".
+- Best Move card gained show/hide. When hidden it stays as a compact card with a Show button rather than disappearing.
+- Best Move auto-expands whenever a new nudge arrives.
+
+### Transitions
+
+- Stack navigation now uses a consistent screen animation with gestures enabled.
+- Login and loading screens fade in, so the splash-to-login handoff is no longer abrupt.
+- Craving panel and Best Move card animate on both enter and exit.
+- Shared collapsible component now animates on close, not just open.
+- Motion constants retuned for a smoother feel: fast 170ms, balanced 240ms, cinematic 340ms.
+
+### Bug Fixes and Optimizations
+
+- Fixed a data-loss race where the outcome-state write ran before the AsyncStorage read resolved and could wipe saved history.
+- DeviceMotion is now subscribed only while the dashboard is visible, instead of during login/onboarding.
+- Looping wave/bob animations now start only on the dashboard and are cancelled on cleanup.
+- Deduplicated `nudge_points` and `evidence_inputs` to remove duplicate React keys.
+- Removed dead `authMode` state and its orphaned styles.
+
+### App Icon Configuration
+
+- `icon`, `ios.icon`, `android.adaptiveIcon.foregroundImage`, and `web.favicon` now point at the real app icon.
+- Android adaptive icon background set to the startup palette color.
+- Launcher icons still require a new native build to appear on a device home screen.
+
+### Account Data Handling
+
+- `backend/users.json`, its `.bak` backups, and `.tmp` file are now git-ignored (the store was never tracked).
+- Added `backend/reset_users.py` to clear accounts and/or session tokens:
+  - default clears both, `--sessions-only` revokes tokens but keeps accounts
+  - confirmation prompt unless `--yes`, timestamped backup unless `--no-backup`
+  - atomic write so an interrupted run cannot truncate the store
+
+### Explored and Reverted
+
+- Prototyped moving the risk tank out of the Decision Engine into a fixed floating overlay with a 2/3 - 1/3 lateral split.
+- Reverted to the inline tank layout by request; no floating-tank code remains.
+
+### Validation Completed On 2026-08-12
+
+- TypeScript checks passed after each change set.
+- backend/main.py parse check passed after the follow-through contract change.
+- No diagnostics remained in touched frontend/backend files.
+- `backend/reset_users.py` verified end to end against seeded data for both clear modes.
+
 ## Update (2026-08-11)
 
 ### Frontend UX and Flow Updates

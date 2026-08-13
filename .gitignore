@@ -37,6 +37,11 @@ yarn-error.*
 /backend/.venv/
 /.venv
 
+# local user store (password hashes + session tokens)
+/backend/users.json
+/backend/users.json.*.bak
+/backend/users.json.tmp
+
 # Expo shared files
 .expo-shared/
 

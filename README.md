@@ -1,6 +1,17 @@
 # DineWise
 
-DineWise is a student-focused mobile app that helps college students reduce unnecessary delivery spending by nudging them toward lower-cost campus food options when they are craving something late at night or running low on meal-plan value. The app combines a simple Expo frontend with a FastAPI backend and Gemini-powered suggestions to make campus dining decisions feel easier, cheaper, and more intentional.
+DineWise is an AI meal-plan decision engine for college students. Instead of just showing balances or menus, it turns a student's campus, meal-plan status, budget, and delivery habits into a fast recommendation about the smartest food choice right now. The app combines a dynamic Expo Router frontend with a FastAPI backend to power university-specific onboarding, meal-plan setup, custom plan resolution, a visible waste meter, and short action-first nudges.
+
+The app centers on a few core ideas:
+
+- prevent wasted meal-plan value and unnecessary delivery spending
+- turn campus-specific data into a simple decision, not a wall of advice
+- use university-specific theming pulled from live backend data
+- show the smartest next move with a clear target, pace, and explanation
+- keep onboarding stable, fast, and easy to scan
+- resolve custom or unusual meal plans dynamically
+- learn from logged outcomes so advice adapts to real follow-through
+- never guess dining hall names, hours, menus, or specials
 
 This is an [Expo](https://expo.dev) project created with [`create-expo-app`](https://www.npmjs.com/package/create-expo-app).
 
@@ -26,6 +37,36 @@ In the output, you'll find options to open the app in a
 - [Expo Go](https://expo.dev/go), a limited sandbox for trying out app development with Expo
 
 You can start developing by editing the files inside the **app** directory. This project uses [file-based routing](https://docs.expo.dev/router/introduction).
+
+## Backend
+
+The app requires the FastAPI backend for theming, meal-plan resolution, auth, and nudges.
+
+```bash
+cd backend
+python -m uvicorn main:app --host 0.0.0.0 --port 8000
+```
+
+Environment variables:
+
+- `GEMINI_API_KEY` (backend) is required for dynamic theme and nudge generation.
+- `EXPO_PUBLIC_API_URL` (frontend) must point at your machine's LAN IP when testing on a physical device. Loopback hosts are rejected on device.
+
+### Accounts and local data
+
+- Accounts and session tokens are stored in `backend/users.json`, which is git-ignored. Passwords are hashed with PBKDF2-SHA256.
+- Profile and app settings persist on-device via AsyncStorage. The auth token is intentionally not restored, so login is always required at launch.
+- Logged recommendation outcomes are kept on-device and sent with nudge requests to inform follow-through-aware advice.
+
+To clear stored accounts or revoke sessions:
+
+```bash
+cd backend
+python reset_users.py                 # clear accounts and tokens
+python reset_users.py --sessions-only # revoke tokens, keep accounts
+```
+
+The script prompts before deleting and writes a timestamped backup by default.
 
 ## Get a fresh project
 

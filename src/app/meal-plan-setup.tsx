@@ -1,6 +1,7 @@
 import { useLocalSearchParams, useRouter } from 'expo-router';
 import React from 'react';
-import { Pressable, SafeAreaView, ScrollView, StyleSheet, Text, View } from 'react-native';
+import { Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
+import { SafeAreaView } from 'react-native-safe-area-context';
 
 import { Spacing } from '@/constants/theme';
 import { useDiningPlan, type StudentLevel } from '@/context/dining-plan-context';
@@ -19,6 +20,7 @@ export default function MealPlanSetupScreen() {
   const router = useRouter();
   const params = useLocalSearchParams<Params>();
   const {
+    authToken,
     school,
     studentLevel,
     setStudentLevel,
@@ -98,7 +100,10 @@ export default function MealPlanSetupScreen() {
       }
       const response = await fetchWithRetry(`${backendBaseUrl}/theme`, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${authToken}`,
+        },
         body: JSON.stringify({ school, student_level: level }),
       }, { timeoutMs: 20000, retries: 2 });
       const data = await response.json();
