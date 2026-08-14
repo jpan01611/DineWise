@@ -1,6 +1,6 @@
 # DineWise
 
-DineWise is an AI meal-plan decision engine for college students. Instead of just showing balances or menus, it turns a student's campus, meal-plan status, budget, and delivery habits into a fast recommendation about the smartest food choice right now. The app combines a dynamic Expo Router frontend with a FastAPI backend to power university-specific onboarding, meal-plan setup, custom plan resolution, a visible waste meter, and short action-first nudges.
+DineWise is a meal-plan decision engine for college students. Instead of only showing balances or menus, it combines a student's remaining plan value, days left, trusted campus options, delivery cost, and preferences into one concrete action. Deterministic code handles availability, ranking, costs, and savings; AI turns those verified facts into a short explanation.
 
 The app centers on a few core ideas:
 
@@ -12,6 +12,35 @@ The app centers on a few core ideas:
 - resolve custom or unusual meal plans dynamically
 - learn from logged outcomes so advice adapts to real follow-through
 - never guess dining hall names, hours, menus, or specials
+- reduce repeated input through one-tap decisions and remembered preferences
+- compare delivery against student-configured campus spots using deterministic arithmetic
+
+## Current experience
+
+The home screen is built around four quick actions:
+
+- **Use my meal plan** generates a recommendation with stored plan context.
+- **Surprise me** chooses a craving/context pair and runs the decision immediately.
+- **My usual** reuses the student's last saved preference when one exists.
+- **I have a craving** opens optional refinement controls.
+
+The **About to order delivery?** flow compares a typed delivery total with the best currently open, student-configured campus spot. It can recommend campus, delivery, or report a tie. The verdict and savings are computed locally; no language model supplies financial or availability facts.
+
+### Trusted campus data
+
+Campus spots are configured once in Settings with:
+
+- name
+- opening and closing times
+- walking time
+- meal-plan coverage
+- optional typical price
+
+DineWise supports overnight hours and ranks open options by meal-plan coverage, shortest walk, then most time before closing. It never invents a location, operating hours, distance, menu, or special.
+
+### Meal-plan health
+
+Students can add their remaining balance and days left in Settings. DineWise calculates the target spend per day and shows plan health in plain language. Waste projections are only shown when enough student-provided behavior data exists; unknown inputs are not replaced with fabricated defaults.
 
 This is an [Expo](https://expo.dev) project created with [`create-expo-app`](https://www.npmjs.com/package/create-expo-app).
 
@@ -36,7 +65,7 @@ In the output, you'll find options to open the app in a
 - [iOS simulator](https://docs.expo.dev/workflow/ios-simulator/)
 - [Expo Go](https://expo.dev/go), a limited sandbox for trying out app development with Expo
 
-You can start developing by editing the files inside the **app** directory. This project uses [file-based routing](https://docs.expo.dev/router/introduction).
+You can start developing by editing files inside `src/app`. This project uses [file-based routing](https://docs.expo.dev/router/introduction).
 
 ## Backend
 
@@ -55,7 +84,7 @@ Environment variables:
 ### Accounts and local data
 
 - Accounts and session tokens are stored in `backend/users.json`, which is git-ignored. Passwords are hashed with PBKDF2-SHA256.
-- Profile and app settings persist on-device via AsyncStorage. The auth token is intentionally not restored, so login is always required at launch.
+- Profile, meal-plan economics, campus spots, and remembered preferences persist on-device via AsyncStorage. The auth token is intentionally not restored, so login is always required at launch.
 - Logged recommendation outcomes are kept on-device and sent with nudge requests to inform follow-through-aware advice.
 
 To clear stored accounts or revoke sessions:

@@ -52,8 +52,17 @@ def fetch_university_domain(school_name: str) -> str | None:
     return None
 
 
+STARTUP_THEME = {
+    'background': '#F5EFE4',
+    'backgroundElement': '#FFF9EF',
+    'secondary': '#E7D2B6',
+    'tertiary': '#F1BF5C',
+    'text': '#4C3A22',
+}
+
+
 def hex_to_rgb(hex_color: str) -> tuple[int, int, int] | None:
-    clean = hex_color.strip().lstrip('#')
+    clean = (hex_color or '').strip().lstrip('#')
     if not re.fullmatch(r'[0-9a-fA-F]{6}', clean):
         return None
     return int(clean[0:2], 16), int(clean[2:4], 16), int(clean[4:6], 16)
@@ -75,63 +84,70 @@ def relative_luminance(hex_color: str) -> float:
     return 0.2126 * rl + 0.7152 * gl + 0.0722 * bl
 
 
-def normalize_palette_colors(background: str, secondary: str, tertiary: str, text: str) -> dict:
-    unique_colors: list[str] = []
-    for color in [background, secondary, tertiary]:
-        upper = color.upper()
-        if upper not in unique_colors:
-            unique_colors.append(upper)
+def _saturation(hex_color: str) -> float:
+    rgb = hex_to_rgb(hex_color)
+    if not rgb:
+        return 0.0
+    r, g, b = (channel / 255.0 for channel in rgb)
+    largest = max(r, g, b)
+    smallest = min(r, g, b)
+    if largest <= 0:
+        return 0.0
+    return (largest - smallest) / largest
 
-    while len(unique_colors) < 3:
-        fallback = '#FFFFFF' if text.lower() == '#000000' else '#111111'
-        if fallback.upper() not in unique_colors:
-            unique_colors.append(fallback.upper())
-        else:
-            unique_colors.append('#9CA3AF')
 
-    ordered = sorted(unique_colors[:3], key=relative_luminance)
+def normalize_palette_colors(colors: list[str], text: str) -> dict:
+    candidates: list[str] = []
+    for color in colors:
+        upper = (color or '').strip().upper()
+        if hex_to_rgb(upper) and upper not in candidates:
+            candidates.append(upper)
 
-    # Keep dark themes possible, but avoid defaulting to near-black page backgrounds
-    # when a different brand color is available.
-    non_black_candidates = [
-        color for color in ordered
-        if relative_luminance(color) > 0.03
-    ]
-    normalized_background = non_black_candidates[0] if non_black_candidates else ordered[0]
+    # Only true black/near-black greys are skipped for the page; dark brand navies stay eligible.
+    def _is_near_black(color: str) -> bool:
+        return relative_luminance(color) <= 0.02 and _saturation(color) < 0.18
 
-    remaining = [color for color in ordered if color != normalized_background]
-    middle = remaining[0] if remaining else normalized_background
-    lightest = remaining[-1] if remaining else normalized_background
+    ordered = sorted(candidates, key=relative_luminance)
+    usable = [color for color in ordered if not _is_near_black(color)]
+
+    # A usable school palette needs a page color plus a distinct card color, all from the
+    # school's own colors. Anything less falls back to the startup palette as a whole.
+    if len(ordered) < 2 or not usable:
+        return dict(STARTUP_THEME)
+
+    # The first entry is the school's designated primary. Use it when it is a real brand hue;
+    # if it is a neutral grey/white/black, fall back to the darkest branded color instead.
+    declared_primary = candidates[0]
+    chromatic_usable = [color for color in usable if _saturation(color) >= 0.18]
+    if declared_primary in chromatic_usable:
+        page = declared_primary
+    else:
+        page = (chromatic_usable or usable)[0]
+
+    rest = [color for color in ordered if color != page]
+
+    # Cards use the lightest official color, preferring branded hues over white/grey.
+    chromatic = [color for color in rest if _saturation(color) >= 0.18]
+    surface = max(chromatic or rest, key=relative_luminance)
+    accents = [color for color in rest if color != surface] or rest
+
+    resolved_text = (text or '').strip().lower()
+    if not re.fullmatch(r'#[0-9a-f]{6}', resolved_text):
+        resolved_text = '#ffffff' if relative_luminance(page) < 0.35 else '#000000'
 
     return {
-        'background': normalized_background,
-        'backgroundElement': lightest,
-        'secondary': middle,
-        'tertiary': lightest,
+        'background': page,
+        'backgroundElement': surface,
+        'secondary': accents[0],
+        'tertiary': accents[-1],
+        'text': resolved_text,
     }
 
 
 def build_fallback_theme(school_name: str, student_level: str | None = None) -> dict:
-    normalized_school = normalize_school_name(school_name)
-    digest = hashlib.sha256(f'{normalized_school}:{student_level or ""}'.encode('utf-8')).hexdigest()
-    seed = int(digest[:8], 16)
-
-    palette_groups = [
-        ('#0F172A', '#1E293B', '#334155', '#F8FAFC'),
-        ('#111827', '#374151', '#6B7280', '#F9FAFB'),
-        ('#1E1B4B', '#312E81', '#4F46E5', '#F8FAFC'),
-        ('#3B0764', '#6B21A8', '#A855F7', '#F9FAFB'),
-        ('#7F1D1D', '#991B1B', '#DC2626', '#FFF7ED'),
-        ('#064E3B', '#065F46', '#10B981', '#ECFDF5'),
-    ]
-    background, background_element, secondary, text = palette_groups[seed % len(palette_groups)]
-
+    # No school palette resolved, so stay on the startup palette instead of inventing colors.
     return {
-        'background': background,
-        'backgroundElement': background_element,
-        'secondary': secondary,
-        'tertiary': secondary,
-        'text': text,
+        **STARTUP_THEME,
         'dining_systems': [],
         'dining_system_summary': 'Live dining data is still loading for this campus. The default theme is being used for now.',
     }
@@ -151,6 +167,7 @@ def fetch_university_info_from_gemini(school_name: str, student_level: str | Non
         'After researching, reply with a short explanation followed by ONE JSON object on its own line — '
         'the JSON must not contain markdown formatting:\n'
         '{\n'
+        '  "official_name": "Full official institution name",\n'
         '  "background": "#RRGGBB",\n'
         '  "backgroundElement": "#RRGGBB",\n'
         '  "secondary": "#RRGGBB",\n'
@@ -161,23 +178,25 @@ def fetch_university_info_from_gemini(school_name: str, student_level: str | Non
         '  "known": true\n'
         '}\n'
         'Rules:\n'
+        '- Resolve abbreviations, nicknames, and initialisms to the official institution before searching\n'
+        '- Copy every hex value verbatim from the official brand/athletics color page; never invent, guess, or approximate a color\n'
         '- background: official primary school color from brand/athletics guidelines\n'
         '- secondary: official secondary/supporting color from the same source; neutral secondaries are valid (black/gray/white)\n'
         '- tertiary: official tertiary/accent color from the same source; neutral tertiary colors are valid\n'
         '- backgroundElement: card/surface companion color tied to the palette (often secondary or a light tint of it)\n'
         '- If multiple secondaries exist, prefer a practical UI companion color used broadly in branding\n'
-        '- Example references: NYU can be violet primary with black or light gray secondary; BYU can be navy primary with white secondary\n'
+        '- Include at least one light official color (not white or grey when the school has a lighter brand hue) so cards can use it\n'
         '- text: #ffffff if background is dark, #000000 if light\n'
         '- dining_systems: only the actual, currently-named meal plan products offered by this school\'s dining '
         'services (e.g. as listed on their dining website) — do not invent generic names like "Meal plan"\n'
         '- known: false if you cannot find a real university matching this name, then return {"known": false}'
     )
 
-    hex_re = re.compile(r'^#[0-9a-fA-F]{6}$')
     if not gemini_client:
         return None
     search_config = genai_types.GenerateContentConfig(
         tools=[genai_types.Tool(google_search=genai_types.GoogleSearch())],
+        temperature=0,
     )
     for model_name in ["gemini-2.5-flash", "gemini-2.0-flash", "gemini-1.5-flash"]:
         try:
@@ -198,26 +217,19 @@ def fetch_university_info_from_gemini(school_name: str, student_level: str | Non
             secondary = data.get("secondary", "")
             tertiary = data.get("tertiary", "")
             txt = data.get("text", "")
-            if hex_re.match(bg) and hex_re.match(be) and hex_re.match(txt):
-                sec = secondary if hex_re.match(secondary) else be
-                if sec.lower() == bg.lower():
-                    sec = '#ffffff' if txt.lower() == '#ffffff' else '#111111'
-                ter = tertiary if hex_re.match(tertiary) else sec
-                if ter.lower() in {bg.lower(), sec.lower()}:
-                    ter = '#9ca3af' if txt.lower() == '#ffffff' else '#374151'
-                palette = normalize_palette_colors(bg, sec, ter, txt)
-                return {
-                    "background": palette['background'],
-                    "backgroundElement": palette['backgroundElement'],
-                    "secondary": palette['secondary'],
-                    "tertiary": palette['tertiary'],
-                    "text": txt,
-                    "dining_systems": [
-                        item.strip() for item in data.get("dining_systems", [])
-                        if isinstance(item, str) and item.strip()
-                    ],
-                    "dining_system_summary": (data.get("dining_summary") or "").strip(),
-                }
+            palette = normalize_palette_colors([bg, be, secondary, tertiary], txt)
+            return {
+                "background": palette['background'],
+                "backgroundElement": palette['backgroundElement'],
+                "secondary": palette['secondary'],
+                "tertiary": palette['tertiary'],
+                "text": palette['text'],
+                "dining_systems": [
+                    item.strip() for item in data.get("dining_systems", [])
+                    if isinstance(item, str) and item.strip()
+                ],
+                "dining_system_summary": (data.get("dining_summary") or "").strip(),
+            }
         except Exception:
             continue
     return None
@@ -245,6 +257,7 @@ def build_university_theme(school_name: str, student_level: str | None = None) -
         THEME_CACHE[cache_key] = theme
         return theme
 
+    # Never cache the fallback: it is not this school's data, and caching it would block retries.
     fallback_theme = build_fallback_theme(school_name, student_level)
     fallback_theme['logo_url'] = logo_url
     THEME_CACHE[cache_key] = fallback_theme
@@ -278,6 +291,11 @@ class UserInput(BaseModel):
     delivery_service: str | None = None
     recent_followed: int | None = None
     recent_logged: int | None = None
+    plan_balance: float | None = None
+    plan_days_left: int | None = None
+    target_per_day: float | None = None
+    projected_waste: float | None = None
+    intent: str | None = None
 
 
 class MealPlanResolveRequest(BaseModel):
@@ -693,6 +711,8 @@ def _build_confidence_metadata(data: UserInput, context_text: str) -> tuple[str,
         evidence_inputs.append(f'Delivery habit: {(data.delivery_frequency or '').strip()}')
     if data.balance > 0:
         evidence_inputs.append(f'Budget: ${data.balance:.2f}')
+    if data.plan_balance is not None and data.plan_days_left:
+        evidence_inputs.append(f'Plan: ${data.plan_balance:.0f} / {data.plan_days_left}d')
     if (data.recent_logged or 0) > 0:
         evidence_inputs.append(f'Follow-through: {data.recent_followed or 0}/{data.recent_logged}')
     if context_text:
@@ -858,6 +878,26 @@ async def get_nudge(data: UserInput, authorization: str | None = Header(default=
     context_text = (data.context or "").strip()
     meal_plan_status_text = (data.meal_plan_status or "").strip()
     delivery_frequency_text = (data.delivery_frequency or "").strip()
+
+    plan_note = ""
+    if data.plan_balance is not None and data.plan_days_left:
+        plan_note = (
+            f" They have ${data.plan_balance:.2f} of meal-plan value left with {data.plan_days_left} days remaining"
+            f" (about ${(data.target_per_day or 0):.2f} per day to use it up)."
+        )
+        if data.projected_waste:
+            plan_note += f" At their current habits roughly ${data.projected_waste:.0f} of that is on track to go unused."
+        plan_note += (
+            " Use these exact figures in the advice; they are student-provided facts, not estimates."
+        )
+
+    intent_note = ""
+    if (data.intent or '') == 'meal-plan':
+        intent_note = " The student explicitly asked to use their meal plan, so make that the move."
+    elif (data.intent or '') == 'surprise':
+        intent_note = " The student asked to be surprised, so commit to one confident pick."
+    elif (data.intent or '') == 'usual':
+        intent_note = " The student asked for their usual, so keep it familiar."
     follow_through = _follow_through_rate(data)
     if follow_through is None:
         follow_through_note = ""
@@ -875,6 +915,8 @@ async def get_nudge(data: UserInput, authorization: str | None = Header(default=
         f"Student has ${data.balance:.2f} left, wants {data.craving}, and is in {context_text}. "
         f"Their meal plan status is {meal_plan_status_text} and their delivery frequency is {delivery_frequency_text}."
         f"{service_note}"
+        f"{plan_note}"
+        f"{intent_note}"
         f"{follow_through_note}"
         " Give concise, action-first advice for a mobile app card. "
         " The product goal is meal-plan optimization and reducing unnecessary delivery spend. "

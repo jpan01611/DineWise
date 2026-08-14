@@ -1,12 +1,13 @@
 import { useLocalSearchParams, useRouter } from 'expo-router';
 import React from 'react';
-import { ActivityIndicator, Alert, Pressable, StyleSheet, Text, TextInput, View } from 'react-native';
+import { ActivityIndicator, Pressable, StyleSheet, Text, TextInput, View } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 
 import { Spacing } from '@/constants/theme';
 import { useDiningPlan } from '@/context/dining-plan-context';
 import { fetchWithRetry } from '@/utils/backend-fetch';
 import { getBackendBaseUrl } from '@/utils/backend-url';
+import { showAlert } from '@/utils/dialog';
 import { contrastColor } from '@/utils/theme-color';
 
 type Params = {
@@ -28,7 +29,7 @@ export default function MealPlanOtherScreen() {
   const saveCustomPlan = async () => {
     const value = customPlan.trim();
     if (!value) {
-      Alert.alert('Missing input', 'Please enter your meal plan name first.');
+      showAlert('Missing input', 'Please enter your meal plan name first.');
       return;
     }
 
@@ -60,7 +61,7 @@ export default function MealPlanOtherScreen() {
       setDiningSystemSummary(summary);
       router.dismissTo({ pathname: '/(tabs)', params: { setupFlow } });
     } catch (error) {
-      Alert.alert('Save failed', String(error));
+      showAlert('Save failed', String(error));
     } finally {
       setLoading(false);
     }

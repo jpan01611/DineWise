@@ -1,5 +1,77 @@
 # DineWise DEVLOG
 
+## Update (2026-08-13)
+
+### Product Direction: One-Tap Decision Assistant
+
+- Reframed the home experience around low-input actions instead of a form-first flow:
+  - Use my meal plan
+  - Surprise me
+  - My usual (shown only after a preference has been learned)
+  - I have a craving (opens optional refinement controls)
+- Removed the duplicate Crave Something entry point while preserving loading feedback after the refinement panel collapses.
+- Persisted the last craving and context so repeat use requires less input.
+- Shortened post-auth onboarding by removing the delivery-service step; delivery preferences now live in Settings.
+- Removed the unreachable delivery onboarding JSX and its orphaned state/effect branch.
+
+### Delivery Check and Trusted Campus Spots
+
+- Added the About to order delivery? check-first flow.
+- Students enter the delivery total and receive a deterministic verdict:
+  - Don't order yet when an open campus option is cheaper.
+  - Order delivery when it is genuinely cheaper.
+  - It is a wash when costs match.
+  - Delivery may be the best option when all configured spots are closed.
+- Added student-configured campus spots with name, hours, walking time, meal-plan coverage, and optional typical price.
+- Added `src/utils/campus-decision.ts` for deterministic time parsing, overnight-hour handling, open/closed evaluation, and ranking by:
+  - meal-plan coverage
+  - shortest walk
+  - most time before closing
+- The comparison exposes its reasoning (coverage, availability, walking time) and never asks AI to invent campus facts.
+- Added an explicit Check with DineWise action, a short checking state, and eased result animation so verdicts do not flicker while the amount is typed.
+
+### Quantitative Meal-Plan Health
+
+- Added persisted meal-plan balance and days-remaining fields in Settings.
+- Home now displays balance, days left, and a deterministic target-per-day calculation.
+- Added plain-language health states instead of making the raw risk score the primary message.
+- Removed an invalid default waste projection that treated an unknown delivery habit as a real value; without habit data, the app now reports only known facts.
+- The backend nudge contract now accepts plan balance, days left, target per day, projected waste, and quick-action intent as structured inputs.
+- AI remains the explanation layer; costs, savings, availability, ranking, and verdicts are computed in code.
+
+### Theme and Trust Corrections
+
+- Reworked university palette resolution after reproducing incorrect purple results for UCI.
+- Palette lookup now runs deterministically and requests verbatim official brand hex values.
+- A declared chromatic primary is preserved as the background; neutral colors cannot displace the university identity color.
+- Cards use the lightest official chromatic color when available, deprioritizing white/grey.
+- Removed hardcoded university examples and arbitrary fallback palettes.
+- Incomplete/failed palette lookups use the complete startup palette and are not cached, allowing later retries.
+- Added palette versioning and a once-per-signed-in-launch refresh so stale stored themes self-heal.
+
+### UX Polish
+
+- Moved the risk meter beside the balance block and scaled it proportionally to preserve mobile text width.
+- Matched balance/meter card heights to remove the dead vertical gap between them.
+- The balance link deep-links and scrolls directly to the Meal plan section in Settings.
+- Replaced the permanently filled Use my meal plan action with a neutral button plus accent border so it does not look preselected.
+- Best Move remains inline but auto-scrolls into view using a custom eased scroll after its entrance animation.
+- Shifted the home header group slightly right and tightened mobile layout behavior.
+- Added a shared cross-platform dialog helper because React Native `Alert` is a no-op on web.
+
+### Session and Account Isolation
+
+- Fixed new accounts inheriting an open craving panel, My usual, balance, campus spots, or prior recommendation state.
+- Added explicit profile and decision-state resets for signup, sign-out, and account deletion.
+- Account deletion now clears all newer persisted personalization fields as well as the original profile data.
+
+### Validation Completed On 2026-08-13
+
+- TypeScript diagnostics are clean across all touched frontend files.
+- `backend/main.py` parses successfully after contract and palette changes.
+- Time-sensitive campus spot logic handles standard and overnight opening windows.
+- Removed temporary palette probe output from the repository.
+
 ## Update (2026-08-12)
 
 ### Outcome Logging Now Feeds Recommendations

@@ -2,14 +2,16 @@ import AsyncStorage from '@react-native-async-storage/async-storage';
 import { useLocalSearchParams, useRouter } from 'expo-router';
 import { DeviceMotion } from 'expo-sensors';
 import React from 'react';
-import { ActivityIndicator, Alert, Image, Platform, ScrollView, StyleSheet, Text, TextInput, TouchableOpacity, View } from 'react-native';
-import Animated, { cancelAnimation, Easing, FadeIn, FadeInDown, FadeInUp, FadeOutDown, FadeOutUp, useAnimatedStyle, useSharedValue, withRepeat, withTiming } from 'react-native-reanimated';
+import { ActivityIndicator, Image, Platform, ScrollView, StyleSheet, Text, TextInput, TouchableOpacity, View } from 'react-native';
+import Animated, { cancelAnimation, Easing, FadeIn, FadeInDown, FadeInUp, FadeOut, FadeOutDown, FadeOutUp, useAnimatedStyle, useSharedValue, withRepeat, withTiming } from 'react-native-reanimated';
 import { SafeAreaView } from 'react-native-safe-area-context';
 
 import { BottomTabInset, Colors, MaxContentWidth, Spacing } from '@/constants/theme';
 import { STARTUP_UNIVERSITY_THEME, useDiningPlan, type StudentLevel } from '@/context/dining-plan-context';
 import { fetchWithRetry } from '@/utils/backend-fetch';
 import { getBackendBaseUrl } from '@/utils/backend-url';
+import { formatMinutesUntilClose, rankOpenSpots } from '@/utils/campus-decision';
+import { showAlert } from '@/utils/dialog';
 import { contrastColor, normalizeHex, pickReadableColor } from '@/utils/theme-color';
 
 const ERROR_COLOR = '#cc0000';
@@ -53,15 +55,6 @@ const DELIVERY_FREQUENCY_OPTIONS: ChipOption[] = [
   { label: 'Daily', emoji: '🔥' },
 ];
 
-const DELIVERY_SERVICE_OPTIONS: readonly string[] = [
-  'DoorDash',
-  'Uber Eats',
-  'Grubhub',
-  'Postmates',
-  'Instacart',
-  'Other',
-];
-
 const STUDENT_LEVEL_OPTIONS: readonly StudentLevel[] = ['undergraduate', 'graduate'];
 
 const BALANCE_PRESETS = [5, 10, 20, 50];
@@ -82,6 +75,68 @@ const DELIVERY_FREQUENCY_WEIGHTS: Record<string, number> = {
 
 function clamp01(value: number): number {
   return Math.min(1, Math.max(0, value));
+}
+
+function buildPlanEconomics(planBalance: string, planDaysLeft: string, deliveryFrequency: string) {
+  const balance = Number.parseFloat(planBalance);
+  const days = Number.parseInt(planDaysLeft, 10);
+  const hasBalance = Number.isFinite(balance) && balance > 0;
+  const hasDays = Number.isFinite(days) && days > 0;
+
+  if (!hasBalance || !hasDays) {
+    return {
+      hasPlanData: false,
+      balance: hasBalance ? balance : null,
+      days: hasDays ? days : null,
+      targetPerDay: null as number | null,
+      projectedWaste: null as number | null,
+      headline: 'Not tracked yet',
+      detail: 'Tell DineWise what is left so it can do the math for you.',
+      tone: 'neutral' as const,
+    };
+  }
+
+  const targetPerDay = Math.round((balance / days) * 100) / 100;
+  const skipRate = DELIVERY_FREQUENCY_WEIGHTS[deliveryFrequency];
+
+  // Without a stated delivery habit there is nothing to project waste from, so report facts only.
+  if (skipRate === undefined) {
+    return {
+      hasPlanData: true,
+      balance,
+      days,
+      targetPerDay,
+      projectedWaste: null as number | null,
+      headline: 'Tracking',
+      detail: `Spend about $${targetPerDay.toFixed(2)} per day on campus to use this up.`,
+      tone: 'neutral' as const,
+    };
+  }
+
+  const projectedWaste = Math.round(balance * skipRate * 100) / 100;
+
+  const tone = skipRate < 0.25 ? 'good' : skipRate < 0.55 ? 'warn' : 'bad';
+  const headline =
+    tone === 'good'
+      ? 'On track'
+      : tone === 'warn'
+        ? 'Slightly behind'
+        : `At risk of wasting $${projectedWaste.toFixed(0)}`;
+  const detail =
+    tone === 'good'
+      ? `You are pacing well at about $${targetPerDay.toFixed(2)} per day.`
+      : `Spend about $${targetPerDay.toFixed(2)} per day on campus to use this up.`;
+
+  return {
+    hasPlanData: true,
+    balance,
+    days,
+    targetPerDay,
+    projectedWaste,
+    headline,
+    detail,
+    tone,
+  };
 }
 
 function buildDecisionSignal(
@@ -190,38 +245,70 @@ function hexLuminance(hex: string): number {
   return 0.2126 * rl + 0.7152 * gl + 0.0722 * bl;
 }
 
+function hexSaturation(hex: string): number {
+  const clean = hex.replace('#', '');
+  if (clean.length !== 6) return 0;
+  const r = parseInt(clean.slice(0, 2), 16) / 255;
+  const g = parseInt(clean.slice(2, 4), 16) / 255;
+  const b = parseInt(clean.slice(4, 6), 16) / 255;
+  const largest = Math.max(r, g, b);
+  const smallest = Math.min(r, g, b);
+  return largest <= 0 ? 0 : (largest - smallest) / largest;
+}
+
 function normalizeThemePalette(data: {
   background: string;
+  backgroundElement?: string;
   secondary?: string;
   tertiary?: string;
   text: string;
   logo_url?: string | null;
 }) {
-  const seed = [data.background, data.secondary, data.tertiary]
-    .map((item) => (item || '').trim().toUpperCase())
-    .filter((item) => /^#[0-9A-F]{6}$/.test(item));
-  const unique = Array.from(new Set(seed));
+  const clean = (value?: string) => {
+    const upper = (value || '').trim().toUpperCase();
+    return /^#[0-9A-F]{6}$/.test(upper) ? upper : null;
+  };
 
-  while (unique.length < 3) {
-    const fallback = data.text.toLowerCase() === '#000000' ? '#FFFFFF' : '#111111';
-    if (!unique.includes(fallback)) {
-      unique.push(fallback);
-    } else {
-      unique.push('#9CA3AF');
-    }
+  const palette = Array.from(new Set(
+    [data.background, data.backgroundElement, data.secondary, data.tertiary]
+      .map(clean)
+      .filter((value): value is string => Boolean(value))
+  ));
+
+  const ordered = [...palette].sort((a, b) => hexLuminance(a) - hexLuminance(b));
+  const isNearBlack = (color: string) => hexLuminance(color) <= 0.02 && hexSaturation(color) < 0.18;
+  const usable = ordered.filter((color) => !isNearBlack(color));
+
+  // Without a page color plus a distinct card color from the school's own palette,
+  // stay on the startup palette rather than substituting invented colors.
+  if (ordered.length < 2 || !usable.length) {
+    return { ...STARTUP_UNIVERSITY_THEME, logoUrl: data.logo_url ?? null };
   }
 
-  const ordered = unique.slice(0, 3).sort((a, b) => hexLuminance(a) - hexLuminance(b));
-  const nonBlackCandidates = ordered.filter((color) => hexLuminance(color) > 0.03);
-  const preferredBackground = nonBlackCandidates[0] ?? ordered[0];
-  const remaining = ordered.filter((color) => color !== preferredBackground);
+  // The first entry is the school's designated primary. Use it when it is a real brand hue;
+  // if it is a neutral grey/white/black, fall back to the darkest branded color instead.
+  const chromaticUsable = usable.filter((color) => hexSaturation(color) >= 0.18);
+  const declaredPrimary = clean(data.background);
+  const background =
+    declaredPrimary && chromaticUsable.includes(declaredPrimary)
+      ? declaredPrimary
+      : (chromaticUsable.length ? chromaticUsable : usable)[0];
+  const rest = ordered.filter((color) => color !== background);
+  const chromatic = rest.filter((color) => hexSaturation(color) >= 0.18);
+  const lightestOf = (colors: string[]) =>
+    colors.reduce((best, color) => (hexLuminance(color) > hexLuminance(best) ? color : best), colors[0]);
+
+  // Cards use the lightest official color, preferring branded hues over white/grey.
+  const backgroundElement = lightestOf(chromatic.length ? chromatic : rest);
+  const accents = rest.filter((color) => color !== backgroundElement);
+  const accentPool = accents.length ? accents : rest;
 
   return {
-    background: preferredBackground,
-    backgroundElement: remaining[remaining.length - 1] ?? preferredBackground,
-    secondary: remaining[0] ?? preferredBackground,
-    tertiary: remaining[remaining.length - 1] ?? preferredBackground,
-    text: data.text,
+    background,
+    backgroundElement,
+    secondary: accentPool[0],
+    tertiary: accentPool[accentPool.length - 1],
+    text: clean(data.text) ?? (hexLuminance(background) < 0.35 ? '#FFFFFF' : '#000000'),
     logoUrl: data.logo_url ?? null,
   };
 }
@@ -319,6 +406,16 @@ export default function HomeScreen() {
     setDiningSessionConfigured,
     configuredDiningSession,
     setConfiguredDiningSession,
+    planBalance,
+    setPlanBalance,
+    planDaysLeft,
+    setPlanDaysLeft,
+    lastCraving,
+    setLastCraving,
+    lastContext,
+    setLastContext,
+    campusSpots,
+    setCampusSpots,
   } = useDiningPlan();
 
   const [hasOnboarded, setHasOnboarded] = React.useState(false);
@@ -333,7 +430,6 @@ export default function HomeScreen() {
   const [themeLoading, setThemeLoading] = React.useState(false);
   const [themeError, setThemeError] = React.useState<string | null>(null);
   const [mealPlanDropdownOpen, setMealPlanDropdownOpen] = React.useState(false);
-  const [deliveryServiceDropdownOpen, setDeliveryServiceDropdownOpen] = React.useState(false);
 
   const [balance, setBalance] = React.useState('');
   const [craving, setCraving] = React.useState('');
@@ -352,11 +448,25 @@ export default function HomeScreen() {
   const [nudgeLoading, setNudgeLoading] = React.useState(false);
   const [isCravingPanelOpen, setIsCravingPanelOpen] = React.useState(false);
   const [isBestMoveOpen, setIsBestMoveOpen] = React.useState(true);
+  const [deliveryCheckOpen, setDeliveryCheckOpen] = React.useState(false);
+  const [deliveryCheckCost, setDeliveryCheckCost] = React.useState('');
+  const [checkedDeliveryCost, setCheckedDeliveryCost] = React.useState<string | null>(null);
+  const [deliveryChecking, setDeliveryChecking] = React.useState(false);
+  const deliveryCheckTimerRef = React.useRef<ReturnType<typeof setTimeout> | null>(null);
+  const [nowMinutes, setNowMinutes] = React.useState(() => {
+    const now = new Date();
+    return now.getHours() * 60 + now.getMinutes();
+  });
   const [isCompletingSetupTransition, setIsCompletingSetupTransition] = React.useState(false);
 
   const [onboardingStep, setOnboardingStep] = React.useState(0);
   const didResolveInitialSession = React.useRef(false);
   const didHydrateOutcomeState = React.useRef(false);
+  const didRefreshThemeOnLaunch = React.useRef(false);
+  const mainScrollRef = React.useRef<ScrollView>(null);
+  const bestMoveOffsetRef = React.useRef(0);
+  const scrollYRef = React.useRef(0);
+  const scrollFrameRef = React.useRef<number | null>(null);
   const setupCompleteTimerRef = React.useRef<ReturnType<typeof setTimeout> | null>(null);
   const onboardingFade = useSharedValue(1);
   const onboardingLift = useSharedValue(0);
@@ -376,7 +486,8 @@ export default function HomeScreen() {
   const isAuthenticated = Boolean(authToken && authUsername);
   const isDashboardVisible =
     hydrated && isAuthenticated && hasOnboarded && !signupFlowActive && !isCompletingSetupTransition;
-  const shouldUseStartupTheme = !hasOnboarded;
+  // Returning users hydrate a saved university palette, so keep startup colors until they are signed in.
+  const shouldUseStartupTheme = !isAuthenticated || !hasOnboarded;
   const activeTheme = shouldUseStartupTheme ? STARTUP_UNIVERSITY_THEME : universityTheme;
 
   const resetOnboardingProfile = React.useCallback(() => {
@@ -390,7 +501,13 @@ export default function HomeScreen() {
     setDiningSystemSummary('');
     setDiningSessionConfigured(false);
     setConfiguredDiningSession(null);
+    setPlanBalance('');
+    setPlanDaysLeft('');
+    setLastCraving('');
+    setLastContext('');
+    setCampusSpots([]);
   }, [
+    setCampusSpots,
     setConfiguredDiningSession,
     setContact,
     setCustomDeliveryService,
@@ -398,10 +515,33 @@ export default function HomeScreen() {
     setDiningSessionConfigured,
     setDiningSystemSummary,
     setDiningSystems,
+    setLastContext,
+    setLastCraving,
     setName,
+    setPlanBalance,
+    setPlanDaysLeft,
     setSchool,
     setStudentLevel,
   ]);
+
+  // Decision state is per-session, so a new sign-in never inherits the last person's screen.
+  const resetDecisionState = React.useCallback(() => {
+    setIsCravingPanelOpen(false);
+    setDeliveryCheckOpen(false);
+    setDeliveryCheckCost('');
+    setCheckedDeliveryCost(null);
+    setSuggestion(null);
+    setSavingsEstimate(null);
+    setWhyItMatches(null);
+    setNudgePoints([]);
+    setEvidenceInputs([]);
+    setCraving('');
+    setContext('');
+    setBalance('');
+    setMealPlanStatus('');
+    setDeliveryFrequency('');
+    setLastOutcome(null);
+  }, []);
 
   const STEPS = React.useMemo(() => {
     const coreSteps = [
@@ -454,16 +594,6 @@ export default function HomeScreen() {
         keyboardType: 'default' as const,
         autoCapitalize: 'none' as const,
         key: 'meal-plan',
-      },
-      {
-        heading: 'Your delivery habit',
-        question: 'Which delivery app do you use most?',
-        placeholder: 'e.g. DoorDash, Uber Eats, Grubhub',
-        value: deliveryService,
-        onChange: setDeliveryService,
-        keyboardType: 'default' as const,
-        autoCapitalize: 'words' as const,
-        key: 'delivery',
       },
     ];
 
@@ -569,6 +699,9 @@ export default function HomeScreen() {
       if (setupCompleteTimerRef.current) {
         clearTimeout(setupCompleteTimerRef.current);
       }
+      if (deliveryCheckTimerRef.current) {
+        clearTimeout(deliveryCheckTimerRef.current);
+      }
     };
   }, []);
 
@@ -618,8 +751,8 @@ export default function HomeScreen() {
     }
     if (!signupFlowActive && !hasOnboarded && setupFlow === 'onboarding' && diningSessionConfigured) {
       setHasOnboarded(false);
-      const deliveryIndex = STEPS.findIndex((step) => step.key === 'delivery');
-      setOnboardingStep(deliveryIndex >= 0 ? deliveryIndex : 0);
+      const mealPlanIndex = STEPS.findIndex((step) => step.key === 'meal-plan');
+      setOnboardingStep(mealPlanIndex >= 0 ? mealPlanIndex : Math.max(0, STEPS.length - 1));
     }
     // Only react when setupFlow itself changes (e.g. returning from the meal-plan
     // screens via dismissTo), not on every render.
@@ -629,9 +762,6 @@ export default function HomeScreen() {
   React.useEffect(() => {
     if (currentStepKey !== 'meal-plan') {
       setMealPlanDropdownOpen(false);
-    }
-    if (currentStepKey !== 'delivery') {
-      setDeliveryServiceDropdownOpen(false);
     }
   }, [currentStepKey]);
 
@@ -647,6 +777,109 @@ export default function HomeScreen() {
       easing: Easing.out(Easing.cubic),
     });
   }, [onboardingStep, onboardingFade, onboardingLift]);
+
+  // Bring the recommendation into view so it reads as its own moment without a route change.
+  React.useEffect(() => {
+    if (!suggestion || nudgeLoading || !isBestMoveOpen) return;
+
+    // RN's animated scrollTo has a fixed, snappy curve, so drive the offset manually instead.
+    const runSmoothScroll = () => {
+      const targetY = Math.max(0, bestMoveOffsetRef.current - Spacing.four);
+      const startY = scrollYRef.current;
+      const delta = targetY - startY;
+      if (Math.abs(delta) < 2) return;
+
+      const duration = 620;
+      const startedAt = Date.now();
+
+      const step = () => {
+        const progress = Math.min(1, (Date.now() - startedAt) / duration);
+        const eased = 1 - (1 - progress) ** 3;
+        mainScrollRef.current?.scrollTo({ y: startY + delta * eased, animated: false });
+        if (progress < 1) {
+          scrollFrameRef.current = requestAnimationFrame(step);
+        }
+      };
+
+      scrollFrameRef.current = requestAnimationFrame(step);
+    };
+
+    const timer = setTimeout(runSmoothScroll, MOTION_BALANCED_MS);
+
+    return () => {
+      clearTimeout(timer);
+      if (scrollFrameRef.current !== null) {
+        cancelAnimationFrame(scrollFrameRef.current);
+        scrollFrameRef.current = null;
+      }
+    };
+  }, [isBestMoveOpen, nudgeLoading, suggestion]);
+
+  React.useEffect(() => {
+    if (!hydrated || isAuthenticated) return;
+    resetDecisionState();
+  }, [hydrated, isAuthenticated, resetDecisionState]);
+
+  // Opening hours are time-sensitive, so refresh the clock while the delivery check is in use.
+  React.useEffect(() => {
+    if (!deliveryCheckOpen) return;
+
+    const tick = () => {
+      const now = new Date();
+      setNowMinutes(now.getHours() * 60 + now.getMinutes());
+    };
+
+    tick();
+    const interval = setInterval(tick, 60000);
+    return () => clearInterval(interval);
+  }, [deliveryCheckOpen]);
+
+  // Re-resolve the school palette once per signed-in launch so stored colors cannot go stale.
+  React.useEffect(() => {
+    if (!isAuthenticated || !hasOnboarded || !school.trim() || didRefreshThemeOnLaunch.current) {
+      return;
+    }
+    didRefreshThemeOnLaunch.current = true;
+
+    let cancelled = false;
+
+    (async () => {
+      try {
+        const backendBaseUrl = getBackendBaseUrl();
+        if (!backendBaseUrl) return;
+
+        const response = await fetchWithRetry(`${backendBaseUrl}/theme`, {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            Authorization: `Bearer ${authToken}`,
+          },
+          body: JSON.stringify({ school, student_level: studentLevel }),
+        }, { timeoutMs: 20000, retries: 1 });
+
+        const data = await response.json();
+        if (cancelled || !response.ok) return;
+
+        setUniversityTheme(normalizeThemePalette({
+          background: data.background,
+          backgroundElement: data.backgroundElement,
+          secondary: data.secondary,
+          tertiary: data.tertiary,
+          text: data.text,
+          logo_url: data.logo_url ?? null,
+        }));
+        if (Array.isArray(data.dining_systems) && data.dining_systems.length) {
+          setDiningSystems(data.dining_systems.filter((item: unknown) => typeof item === 'string'));
+        }
+      } catch {
+        // Keep the stored palette when the refresh cannot complete.
+      }
+    })();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [authToken, hasOnboarded, isAuthenticated, school, setDiningSystems, setUniversityTheme, studentLevel]);
 
   const handleOnboardingComplete = async () => {
     if (!school.trim()) {
@@ -672,6 +905,7 @@ export default function HomeScreen() {
       if (!response.ok) throw new Error(data.detail || JSON.stringify(data));
       setUniversityTheme(normalizeThemePalette({
         background: data.background,
+        backgroundElement: data.backgroundElement,
         secondary: data.secondary ?? data.backgroundElement,
         tertiary: data.tertiary ?? data.secondary ?? data.backgroundElement,
         text: data.text,
@@ -953,6 +1187,34 @@ export default function HomeScreen() {
   ]);
   const savingsAccentBg = savingsAccent + '1f';
   const inferredBadgeBg = dashboardCardText + '12';
+  const planEconomics = React.useMemo(
+    () => buildPlanEconomics(planBalance, planDaysLeft, deliveryFrequency),
+    [deliveryFrequency, planBalance, planDaysLeft]
+  );
+  const openSpots = React.useMemo(() => rankOpenSpots(campusSpots, nowMinutes), [campusSpots, nowMinutes]);
+  const bestSpot = openSpots[0] ?? null;
+  const deliveryCheck = React.useMemo(() => {
+    if (checkedDeliveryCost === null) return null;
+
+    const cost = Number.parseFloat(checkedDeliveryCost);
+    if (!Number.isFinite(cost) || cost <= 0) return null;
+    if (!bestSpot) return null;
+
+    const spotPrice = Number.parseFloat(bestSpot.spot.estimatedCost ?? '');
+    const campusCost = bestSpot.spot.coveredByPlan
+      ? 0
+      : Number.isFinite(spotPrice) && spotPrice >= 0
+        ? spotPrice
+        : null;
+
+    if (campusCost === null) {
+      return { cost, campusCost: null, savings: null, verdict: 'unknown' as const };
+    }
+
+    const difference = Math.round((cost - campusCost) * 100) / 100;
+    const verdict = difference > 0 ? ('campus' as const) : difference < 0 ? ('delivery' as const) : ('tie' as const);
+    return { cost, campusCost, savings: Math.abs(difference), verdict };
+  }, [bestSpot, checkedDeliveryCost]);
   const weeklyPotential = React.useMemo(
     () => parseWeeklySavingsEstimate(savingsEstimate, decisionSignal.weeklyWaste),
     [decisionSignal.weeklyWaste, savingsEstimate]
@@ -989,7 +1251,11 @@ export default function HomeScreen() {
     setContext(pick(CONTEXT_OPTIONS));
   };
 
-  const fetchNudge = async () => {
+  const fetchNudge = async (overrides?: { craving?: string; context?: string; intent?: string }) => {
+    // Quick actions run with inferred inputs so the user never has to fill the form first.
+    const resolvedCraving = (overrides?.craving ?? craving).trim() || lastCraving.trim();
+    const resolvedContext = (overrides?.context ?? context).trim() || lastContext.trim();
+
     setNudgeLoading(true);
     setIsCravingPanelOpen(false);
     try {
@@ -1005,8 +1271,8 @@ export default function HomeScreen() {
         },
         body: JSON.stringify({
           balance: parseFloat(balance) || 0,
-          craving,
-          context,
+          craving: resolvedCraving,
+          context: resolvedContext,
           meal_plan_status: mealPlanStatus,
           delivery_frequency: deliveryFrequency,
           delivery_service: (
@@ -1016,6 +1282,11 @@ export default function HomeScreen() {
           ),
           recent_followed: recentFollowedCount,
           recent_logged: recentOutcomes.length,
+          plan_balance: planEconomics.balance,
+          plan_days_left: planEconomics.days,
+          target_per_day: planEconomics.targetPerDay,
+          projected_waste: planEconomics.projectedWaste,
+          intent: overrides?.intent,
         }),
       }, { timeoutMs: 15000, retries: 1 });
 
@@ -1047,13 +1318,36 @@ export default function HomeScreen() {
           : []
       );
       setTruthPolicy(String(data.truth_policy ?? 'No guessed hall names, hours, menus, or specials.'));
+      if (resolvedCraving) setLastCraving(resolvedCraving);
+      if (resolvedContext) setLastContext(resolvedContext);
     } catch (error) {
       console.error('Connection failed:', error);
       setIsCravingPanelOpen(true);
-      Alert.alert('Connection failed', String(error));
+      showAlert('Connection failed', String(error));
     } finally {
       setNudgeLoading(false);
     }
+  };
+
+  const runQuickDecision = (intent: 'meal-plan' | 'usual' | 'surprise') => {
+    if (intent === 'surprise') {
+      const pick = <T extends ChipOption>(options: T[]) => options[Math.floor(Math.random() * options.length)].label;
+      const nextCraving = pick(CRAVING_OPTIONS);
+      const nextContext = pick(CONTEXT_OPTIONS);
+      setCraving(nextCraving);
+      setContext(nextContext);
+      void fetchNudge({ craving: nextCraving, context: nextContext, intent });
+      return;
+    }
+
+    if (intent === 'usual') {
+      setCraving(lastCraving);
+      setContext(lastContext);
+      void fetchNudge({ craving: lastCraving, context: lastContext, intent });
+      return;
+    }
+
+    void fetchNudge({ intent });
   };
 
   const submitAuth = async () => {
@@ -1180,6 +1474,7 @@ export default function HomeScreen() {
                     setAuthToken(null);
                     setAuthUsername('');
                     resetOnboardingProfile();
+                    resetDecisionState();
                     setHasOnboarded(false);
                     setSignupFlowActive(true);
                     setOnboardingStep(0);
@@ -1335,70 +1630,6 @@ export default function HomeScreen() {
                   </View>
                 ) : null}
               </View>
-            ) : currentStep.key === 'delivery' ? (
-              <View style={styles.sessionSetupRow}>
-                <Text style={{ color: cardText, fontWeight: '600', fontSize: 14 }}>
-                  Pick your usual delivery service
-                </Text>
-                <TouchableOpacity
-                  onPress={() => setDeliveryServiceDropdownOpen((prev) => !prev)}
-                  activeOpacity={0.8}
-                  style={[styles.dropdownTrigger, { borderColor: cardText + '35' }]}>
-                  <Text style={{ color: cardText, fontWeight: deliveryService ? '700' : '500' }}>
-                    {deliveryService === 'Other' && customDeliveryService.trim()
-                      ? customDeliveryService
-                      : deliveryService || 'Select a service'}
-                  </Text>
-                  <Text style={{ color: cardText, fontWeight: '700' }}>
-                    {deliveryServiceDropdownOpen ? '▲' : '▼'}
-                  </Text>
-                </TouchableOpacity>
-
-                {deliveryServiceDropdownOpen ? (
-                  <View style={[styles.onboardingOptionsList, { borderColor: cardText + '35' }]}>
-                    <ScrollView
-                      style={styles.onboardingOptionsScroll}
-                      nestedScrollEnabled
-                      showsVerticalScrollIndicator
-                      keyboardShouldPersistTaps="handled">
-                      {DELIVERY_SERVICE_OPTIONS.map((option) => {
-                        const isSelected = deliveryService === option;
-                        return (
-                          <TouchableOpacity
-                            key={option}
-                            onPress={() => {
-                              setDeliveryService(option);
-                              if (option !== 'Other') {
-                                setCustomDeliveryService('');
-                              }
-                              setDeliveryServiceDropdownOpen(false);
-                            }}>
-                            <View style={styles.onboardingOptionRow}>
-                              <Text style={{ color: cardText, fontWeight: isSelected ? '700' : '500' }}>
-                                {option}
-                              </Text>
-                              <Text style={{ color: cardText, fontWeight: '700' }}>
-                                {isSelected ? '✓' : ''}
-                              </Text>
-                            </View>
-                          </TouchableOpacity>
-                        );
-                      })}
-                    </ScrollView>
-                  </View>
-                ) : null}
-
-                {deliveryService === 'Other' ? (
-                  <TextInput
-                    style={[styles.input, { fontSize: 16 }]}
-                    value={customDeliveryService}
-                    onChangeText={setCustomDeliveryService}
-                    placeholder="Type your delivery service"
-                    placeholderTextColor={cardText + '99'}
-                    autoCapitalize="words"
-                  />
-                ) : null}
-              </View>
             ) : currentStep.key === 'signup-password' ? (
               <View style={styles.sessionSetupRow}>
                 <TextInput
@@ -1483,10 +1714,15 @@ export default function HomeScreen() {
     <View style={[styles.container, { backgroundColor: dashboardPageBg }]}> 
       <SafeAreaView edges={["top", "left", "right"]} style={[styles.safeArea, { backgroundColor: dashboardPageBg }]}> 
         <ScrollView
+          ref={mainScrollRef}
           style={styles.mainScroll}
           contentContainerStyle={styles.mainScrollContent}
           keyboardShouldPersistTaps="handled"
           contentInsetAdjustmentBehavior="automatic"
+          scrollEventThrottle={16}
+          onScroll={(event) => {
+            scrollYRef.current = event.nativeEvent.contentOffset.y;
+          }}
           showsVerticalScrollIndicator={false}
         >
           <Animated.View style={[styles.mainContent, Platform.OS === 'web' ? styles.mainContentWeb : styles.mainContentMobile, homeTransitionStyle]}>
@@ -1519,26 +1755,39 @@ export default function HomeScreen() {
               <View style={[styles.sectionCard, { backgroundColor: dashboardCardBg }]}> 
                 <View style={styles.formBlock}>
                   <Text style={[styles.engineTitle, { color: dashboardCardText }]}>What should I eat?</Text>
-                  <Text style={[styles.engineSubtitle, { color: dashboardMutedText }]}>DineWise turns your meal plan, budget, and delivery habits into one quick move.</Text>
 
-                  <TouchableOpacity
-                    activeOpacity={0.75}
-                    onPress={() => openMealPlanSetup('dashboard')}>
-                    <View style={[styles.enginePlanCard, { backgroundColor: dashboardCardText + '0d' }]}> 
-                      <View style={{ flex: 1 }}>
-                        <Text style={[styles.enginePlanLabel, { color: dashboardMutedText }]}>Meal plan</Text>
-                        <Text style={[styles.enginePlanName, { color: dashboardCardText }]} numberOfLines={1}>
-                          {diningSessionConfigured ? configuredDiningSession : 'Set up your meal plan'}
+                  <View style={styles.planRow}>
+                    <View style={[styles.planHealthCard, styles.planHealthCardFlex, { backgroundColor: dashboardCardText + '0d' }]}>
+                      <View style={styles.planHealthTopRow}>
+                        <Text
+                          numberOfLines={1}
+                          adjustsFontSizeToFit
+                          minimumFontScale={0.8}
+                          style={[styles.planHealthValue, { color: dashboardCardText }]}>
+                          {planEconomics.balance !== null ? `$${planEconomics.balance.toFixed(2)} left` : 'Balance not set'}
                         </Text>
+                        <Text style={[styles.planHealthMeta, { color: dashboardMutedText }]}>
+                          {planEconomics.days !== null
+                            ? `${planEconomics.days} days left · target $${(planEconomics.targetPerDay ?? 0).toFixed(2)}/day`
+                            : 'Add your balance and days left for exact targets.'}
+                        </Text>
+                        <View style={[styles.planHealthChip, { backgroundColor: cardAccent }]}>
+                          <Text style={[styles.planHealthChipText, { color: cardAccentText }]} numberOfLines={1}>
+                            {planEconomics.headline}
+                          </Text>
+                        </View>
                       </View>
-                      <View style={[styles.enginePlanArrowWrap, { backgroundColor: dashboardCardText + '1a' }]}> 
-                        <Text style={[styles.enginePlanArrow, { color: dashboardCardText }]}>›</Text>
-                      </View>
+                      <Text style={[styles.planHealthDetail, { color: dashboardMutedText }]}>{planEconomics.detail}</Text>
+                      <TouchableOpacity
+                        activeOpacity={0.7}
+                        onPress={() => router.push({ pathname: '/settings', params: { focus: 'meal-plan' } } as never)}>
+                        <Text style={[styles.planHealthLink, { color: surpriseLinkColor }]}>
+                          {planEconomics.hasPlanData ? 'Update balance' : 'Add balance and days left'}
+                        </Text>
+                      </TouchableOpacity>
                     </View>
-                  </TouchableOpacity>
 
-                  <View style={styles.engineMeterLayout}>
-                    <View style={[styles.wasteMeterCard, { backgroundColor: dashboardCardText + '08' }]}> 
+                    <View style={[styles.wasteMeterCard, styles.wasteMeterCardInline, { backgroundColor: dashboardCardText + '08' }]}> 
                       <View style={styles.wasteMeterHeader}>
                         <Text numberOfLines={1} style={[styles.wasteMeterTitle, { color: dashboardCardText }]}>Risk</Text>
                         <TouchableOpacity
@@ -1563,7 +1812,7 @@ export default function HomeScreen() {
                       </View>
 
                       <View style={styles.wasteGaugeShell}>
-                        <View style={[styles.wasteGaugeTrackVertical, { backgroundColor: gaugeTrackColor, borderColor: gaugeChromeColor }]}> 
+                        <View style={[styles.wasteGaugeTrackVertical, styles.wasteGaugeTrackInline, { backgroundColor: gaugeTrackColor, borderColor: gaugeChromeColor }]}> 
                           <Animated.View
                             pointerEvents="none"
                             style={[
@@ -1591,7 +1840,215 @@ export default function HomeScreen() {
                         </View>
                       </View>
                     </View>
+                  </View>
 
+                  <View style={[styles.deliveryCheckCard, { backgroundColor: dashboardCardText + '0d' }]}>
+                    <TouchableOpacity activeOpacity={0.8} onPress={() => setDeliveryCheckOpen((open) => !open)}>
+                      <View style={styles.deliveryCheckHeader}>
+                        <Text style={[styles.deliveryCheckTitle, { color: dashboardCardText }]}>
+                          🚗 About to order {deliveryService && deliveryService !== 'Other' ? deliveryService : 'delivery'}?
+                        </Text>
+                        <Text style={[styles.planHealthLink, { color: surpriseLinkColor }]}>
+                          {deliveryCheckOpen ? 'Hide' : 'Check first'}
+                        </Text>
+                      </View>
+                    </TouchableOpacity>
+
+                    {deliveryCheckOpen ? (
+                      <Animated.View
+                        entering={FadeInDown.duration(MOTION_FAST_MS).easing(Easing.out(Easing.quad))}
+                        exiting={FadeOutUp.duration(MOTION_FAST_MS).easing(Easing.in(Easing.quad))}
+                        style={styles.deliveryCheckBody}>
+                        <TextInput
+                          style={[
+                            styles.plainInput,
+                            { color: dashboardCardText, backgroundColor: dashboardInputBg, borderColor: dashboardInputBorder },
+                          ]}
+                          value={deliveryCheckCost}
+                          onChangeText={(value) => {
+                            setDeliveryCheckCost(value);
+                            setCheckedDeliveryCost(null);
+                          }}
+                          keyboardType="numeric"
+                          placeholder="Delivery total, e.g. 18.72"
+                          placeholderTextColor={dashboardMutedText}
+                        />
+
+                        <TouchableOpacity
+                          activeOpacity={0.85}
+                          disabled={!deliveryCheckCost.trim() || deliveryChecking}
+                          onPress={() => {
+                            const amount = deliveryCheckCost.trim();
+                            setCheckedDeliveryCost(null);
+                            setDeliveryChecking(true);
+                            if (deliveryCheckTimerRef.current) {
+                              clearTimeout(deliveryCheckTimerRef.current);
+                            }
+                            // Brief pause so the verdict lands as a result instead of snapping in.
+                            deliveryCheckTimerRef.current = setTimeout(() => {
+                              setCheckedDeliveryCost(amount);
+                              setDeliveryChecking(false);
+                            }, MOTION_CINEMATIC_MS);
+                          }}>
+                          <View
+                            style={[
+                              styles.ctaButton,
+                              { backgroundColor: tertiaryButtonColor, opacity: deliveryCheckCost.trim() && !deliveryChecking ? 1 : 0.4 },
+                            ]}>
+                            <Text style={[styles.ctaButtonText, { color: tertiaryButtonText }]}>
+                              {deliveryChecking ? 'Checking...' : 'Check with DineWise'}
+                            </Text>
+                          </View>
+                        </TouchableOpacity>
+
+                        {deliveryChecking ? (
+                          <Animated.View
+                            entering={FadeIn.duration(MOTION_FAST_MS)}
+                            exiting={FadeOut.duration(MOTION_FAST_MS)}
+                            style={styles.cravingLoadingRow}>
+                            <ActivityIndicator size="small" color={dashboardCardText} />
+                            <Text style={[styles.planHealthDetail, { color: dashboardMutedText }]}>
+                              Checking your open campus options...
+                            </Text>
+                          </Animated.View>
+                        ) : !campusSpots.length ? (
+                          <Text style={[styles.planHealthDetail, { color: dashboardMutedText }]}>
+                            Add your campus spots in Settings so DineWise can compare against a real option.
+                          </Text>
+                        ) : !bestSpot ? (
+                          <View style={styles.deliveryVerdict}>
+                            <Text style={[styles.deliveryVerdictTitle, { color: dashboardCardText }]}>
+                              Delivery may be your best option tonight.
+                            </Text>
+                            <Text style={[styles.planHealthDetail, { color: dashboardMutedText }]}>
+                              Your saved campus spots are closed right now, so DineWise could not find a meal-plan-covered option.
+                            </Text>
+                          </View>
+                        ) : !deliveryCheck ? (
+                          <Text style={[styles.planHealthDetail, { color: dashboardMutedText }]}>
+                            Enter the delivery total, then tap Check with DineWise.
+                          </Text>
+                        ) : deliveryCheck.verdict === 'unknown' ? (
+                          <Text style={[styles.planHealthDetail, { color: dashboardMutedText }]}>
+                            Add a typical price for {bestSpot.spot.name} in Settings so DineWise can compare exactly.
+                          </Text>
+                        ) : (
+                          <Animated.View
+                            entering={FadeInDown.duration(MOTION_BALANCED_MS).easing(Easing.out(Easing.cubic))}
+                            style={styles.deliveryVerdict}>
+                            <Text style={[styles.deliveryVerdictTitle, { color: dashboardCardText }]}>
+                              {deliveryCheck.verdict === 'campus'
+                                ? "Don't order yet."
+                                : deliveryCheck.verdict === 'delivery'
+                                  ? 'Order delivery — it is the better value.'
+                                  : 'It is a wash tonight.'}
+                            </Text>
+
+                            <Text style={[styles.deliveryOptionName, { color: dashboardCardText }]}>
+                              {bestSpot.spot.name} · {deliveryCheck.campusCost === 0 ? '$0.00 with your meal plan' : `$${(deliveryCheck.campusCost ?? 0).toFixed(2)}`}
+                            </Text>
+
+                            <View style={styles.whyList}>
+                              {bestSpot.spot.coveredByPlan ? (
+                                <Text style={[styles.whyItem, { color: dashboardMutedText }]}>✓ Covered by your meal plan</Text>
+                              ) : null}
+                              {formatMinutesUntilClose(bestSpot.minutesUntilClose) ? (
+                                <Text style={[styles.whyItem, { color: dashboardMutedText }]}>
+                                  ✓ Open now · {formatMinutesUntilClose(bestSpot.minutesUntilClose)}
+                                </Text>
+                              ) : null}
+                              {bestSpot.walkMinutes !== null ? (
+                                <Text style={[styles.whyItem, { color: dashboardMutedText }]}>✓ {bestSpot.walkMinutes} min walk</Text>
+                              ) : null}
+                            </View>
+
+                            <Text style={[styles.planHealthDetail, { color: dashboardMutedText }]}>
+                              Delivery ${deliveryCheck.cost.toFixed(2)} vs campus ${(deliveryCheck.campusCost ?? 0).toFixed(2)}
+                            </Text>
+
+                            {deliveryCheck.savings ? (
+                              <View style={[styles.savingsBadge, { backgroundColor: savingsAccentBg }]}>
+                                <Text style={[styles.savingsBadgeText, { color: savingsAccent }]}>
+                                  Save ${deliveryCheck.savings.toFixed(2)} {deliveryCheck.verdict === 'delivery' ? 'by ordering delivery' : 'on campus'}
+                                </Text>
+                              </View>
+                            ) : null}
+                          </Animated.View>
+                        )}
+                      </Animated.View>
+                    ) : null}
+                  </View>
+
+                  <View style={styles.quickActionGrid}>
+                    <TouchableOpacity
+                      style={styles.quickActionCell}
+                      activeOpacity={0.85}
+                      disabled={nudgeLoading}
+                      onPress={() => runQuickDecision('meal-plan')}>
+                      <View
+                        style={[
+                          styles.quickActionButton,
+                          styles.quickActionPrimary,
+                          {
+                            backgroundColor: dashboardCardText + '14',
+                            borderColor: tertiaryButtonColor,
+                            opacity: nudgeLoading ? 0.5 : 1,
+                          },
+                        ]}>
+                        <Text style={[styles.quickActionText, { color: dashboardCardText }]}>💰 Use my meal plan</Text>
+                      </View>
+                    </TouchableOpacity>
+                    <TouchableOpacity
+                      style={styles.quickActionCell}
+                      activeOpacity={0.85}
+                      disabled={nudgeLoading}
+                      onPress={() => runQuickDecision('surprise')}>
+                      <View style={[styles.quickActionButton, { backgroundColor: dashboardCardText + '14', opacity: nudgeLoading ? 0.5 : 1 }]}>
+                        <Text style={[styles.quickActionText, { color: dashboardCardText }]}>🎲 Surprise me</Text>
+                      </View>
+                    </TouchableOpacity>
+
+                    {lastCraving ? (
+                      <TouchableOpacity
+                        style={styles.quickActionCell}
+                        activeOpacity={0.85}
+                        disabled={nudgeLoading}
+                        onPress={() => runQuickDecision('usual')}>
+                        <View style={[styles.quickActionButton, { backgroundColor: dashboardCardText + '14', opacity: nudgeLoading ? 0.5 : 1 }]}>
+                          <Text style={[styles.quickActionText, { color: dashboardCardText }]} numberOfLines={1}>
+                            🔁 My usual · {lastCraving}
+                          </Text>
+                        </View>
+                      </TouchableOpacity>
+                    ) : null}
+
+                    <TouchableOpacity
+                      style={styles.quickActionCell}
+                      activeOpacity={0.85}
+                      onPress={() => setIsCravingPanelOpen(true)}>
+                      <View style={[styles.quickActionButton, { backgroundColor: dashboardCardText + '14' }]}>
+                        <Text style={[styles.quickActionText, { color: dashboardCardText }]}>🍕 I have a craving</Text>
+                      </View>
+                    </TouchableOpacity>
+                  </View>
+
+                  <TouchableOpacity
+                    activeOpacity={0.75}
+                    onPress={() => openMealPlanSetup('dashboard')}>
+                    <View style={[styles.enginePlanCard, { backgroundColor: dashboardCardText + '0d' }]}> 
+                      <View style={{ flex: 1 }}>
+                        <Text style={[styles.enginePlanLabel, { color: dashboardMutedText }]}>Meal plan</Text>
+                        <Text style={[styles.enginePlanName, { color: dashboardCardText }]} numberOfLines={1}>
+                          {diningSessionConfigured ? configuredDiningSession : 'Set up your meal plan'}
+                        </Text>
+                      </View>
+                      <View style={[styles.enginePlanArrowWrap, { backgroundColor: dashboardCardText + '1a' }]}> 
+                        <Text style={[styles.enginePlanArrow, { color: dashboardCardText }]}>›</Text>
+                      </View>
+                    </View>
+                  </TouchableOpacity>
+
+                  <View style={styles.engineMeterLayout}>
                     <View style={styles.engineStatsColumn}>
                       <View style={styles.engineStatsRow}>
                         <View style={[styles.engineStatPill, { backgroundColor: dashboardCardText + '0d' }]}> 
@@ -1616,25 +2073,17 @@ export default function HomeScreen() {
                   </View>
 
                   {!isCravingPanelOpen ? (
-                    <Animated.View
-                      entering={FadeInDown.duration(MOTION_FAST_MS).easing(Easing.out(Easing.quad))}
-                      exiting={FadeOutUp.duration(MOTION_FAST_MS).easing(Easing.in(Easing.quad))}
-                      style={styles.formBlock}>
-                      {nudgeLoading ? (
+                    nudgeLoading ? (
+                      <Animated.View
+                        entering={FadeInDown.duration(MOTION_FAST_MS).easing(Easing.out(Easing.quad))}
+                        exiting={FadeOutUp.duration(MOTION_FAST_MS).easing(Easing.in(Easing.quad))}
+                        style={styles.formBlock}>
                         <View style={[styles.cravingRevealButton, styles.cravingLoadingRow, { backgroundColor: tertiaryButtonColor }]}> 
                           <ActivityIndicator size="small" color={tertiaryButtonText} />
                           <Text style={[styles.cravingRevealText, { color: tertiaryButtonText }]}>Finding your best move...</Text>
                         </View>
-                      ) : (
-                        <TouchableOpacity
-                          onPress={() => setIsCravingPanelOpen(true)}
-                          activeOpacity={0.85}>
-                          <View style={[styles.cravingRevealButton, { backgroundColor: tertiaryButtonColor }]}> 
-                            <Text style={[styles.cravingRevealText, { color: tertiaryButtonText }]}>Crave Something?</Text>
-                          </View>
-                        </TouchableOpacity>
-                      )}
-                    </Animated.View>
+                      </Animated.View>
+                    ) : null
                   ) : (
                     <Animated.View
                       entering={FadeInDown.duration(MOTION_BALANCED_MS).easing(Easing.out(Easing.cubic))}
@@ -1815,6 +2264,9 @@ export default function HomeScreen() {
               <Animated.View
                 entering={FadeInUp.duration(MOTION_BALANCED_MS).easing(Easing.out(Easing.cubic))}
                 exiting={FadeOutDown.duration(MOTION_FAST_MS).easing(Easing.in(Easing.quad))}
+                onLayout={(event) => {
+                  bestMoveOffsetRef.current = event.nativeEvent.layout.y;
+                }}
                 style={styles.section}>
                 <View style={styles.sectionHeaderRow}>
                   <Text style={[styles.sectionTitle, styles.sectionTitleFlush, { color: dashboardPageText + 'b3' }]}>BEST MOVE</Text>
@@ -2080,6 +2532,7 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     gap: Spacing.two,
     paddingTop: Spacing.two,
+    paddingLeft: Spacing.two,
   },
   headerIconFrame: {
     width: 44,
@@ -2191,6 +2644,119 @@ const styles = StyleSheet.create({
     marginTop: Spacing.two,
     borderTopWidth: StyleSheet.hairlineWidth,
     paddingTop: Spacing.two,
+  },
+  planHealthCard: {
+    borderRadius: Spacing.two,
+    padding: Spacing.two,
+    gap: Spacing.one,
+  },
+  planRow: {
+    flexDirection: 'row',
+    alignItems: 'stretch',
+    gap: Spacing.two,
+  },
+  planHealthCardFlex: {
+    flex: 1,
+    minWidth: 0,
+    justifyContent: 'space-between',
+  },
+  wasteMeterCardInline: {
+    width: 92,
+    paddingHorizontal: Spacing.one,
+  },
+  wasteGaugeTrackInline: {
+    width: 78,
+    height: 182,
+    borderRadius: 29,
+    padding: 6,
+  },
+  planHealthTopRow: {
+    gap: Spacing.one,
+  },
+  planHealthValue: {
+    fontSize: 19,
+    fontWeight: '800',
+  },
+  planHealthMeta: {
+    fontSize: 12,
+    marginTop: 2,
+  },
+  planHealthChip: {
+    borderRadius: 999,
+    paddingHorizontal: Spacing.two,
+    paddingVertical: 5,
+    alignSelf: 'flex-start',
+  },
+  planHealthChipText: {
+    fontSize: 12,
+    fontWeight: '800',
+  },
+  planHealthDetail: {
+    fontSize: 12,
+  },
+  planHealthLink: {
+    fontSize: 12,
+    fontWeight: '700',
+    marginTop: 2,
+  },
+  quickActionGrid: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    gap: Spacing.two,
+  },
+  deliveryCheckCard: {
+    borderRadius: Spacing.two,
+    padding: Spacing.two,
+    gap: Spacing.two,
+  },
+  deliveryCheckHeader: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    gap: Spacing.two,
+  },
+  deliveryCheckTitle: {
+    fontSize: 14,
+    fontWeight: '800',
+    flex: 1,
+  },
+  deliveryCheckBody: {
+    gap: Spacing.two,
+  },
+  deliveryVerdict: {
+    gap: Spacing.one,
+  },
+  deliveryVerdictTitle: {
+    fontSize: 16,
+    fontWeight: '800',
+  },
+  deliveryOptionName: {
+    fontSize: 15,
+    fontWeight: '700',
+  },
+  whyList: {
+    gap: 2,
+  },
+  whyItem: {
+    fontSize: 12,
+  },
+  quickActionCell: {
+    flexGrow: 1,
+    flexBasis: '46%',
+  },
+  quickActionButton: {
+    borderRadius: Spacing.two,
+    paddingVertical: Spacing.three,
+    paddingHorizontal: Spacing.two,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  quickActionPrimary: {
+    borderWidth: 1.5,
+  },
+  quickActionText: {
+    fontSize: 14,
+    fontWeight: '700',
   },
   cravingLoadingRow: {
     flexDirection: 'row',
@@ -2394,9 +2960,9 @@ const styles = StyleSheet.create({
   },
   wasteGaugeLiquidVertical: {
     position: 'absolute',
-    left: 7,
-    right: 7,
-    bottom: 7,
+    left: 6,
+    right: 6,
+    bottom: 6,
     borderRadius: 999,
     opacity: 0.85,
     overflow: 'hidden',
@@ -2480,13 +3046,15 @@ const styles = StyleSheet.create({
     gap: 6,
     paddingLeft: 0,
     alignItems: 'center',
+    flex: 1,
+    justifyContent: 'center',
   },
   wasteGaugeGlassHighlight: {
     position: 'absolute',
-    left: 13,
-    top: 14,
-    bottom: 14,
-    width: 14,
+    left: 11,
+    top: 12,
+    bottom: 12,
+    width: 12,
     borderRadius: 999,
     backgroundColor: 'rgba(255,255,255,0.15)',
   },

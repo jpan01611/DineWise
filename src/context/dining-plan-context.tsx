@@ -5,6 +5,17 @@ import React from 'react';
 export type UniversityTheme = { background: string; backgroundElement: string; secondary: string; tertiary: string; text: string; logoUrl?: string | null };
 export type StudentLevel = 'undergraduate' | 'graduate';
 
+// Student-configured campus locations. Never model-generated, so hours and names stay trustworthy.
+export type CampusSpot = {
+  id: string;
+  name: string;
+  opensAt: string;
+  closesAt: string;
+  coveredByPlan: boolean;
+  walkMinutes: string;
+  estimatedCost?: string;
+};
+
 export const STARTUP_UNIVERSITY_THEME: UniversityTheme = {
   background: '#F5EFE4',
   backgroundElement: '#FFF9EF',
@@ -15,11 +26,14 @@ export const STARTUP_UNIVERSITY_THEME: UniversityTheme = {
 };
 
 const SETTINGS_STORAGE_KEY = 'dinewise.settings.v1';
+// Bump when palette resolution changes so stale stored themes are discarded instead of shown.
+const PALETTE_VERSION = 2;
 
 type PersistedSettings = {
   authToken: string | null;
   authUsername: string;
   authEmail?: string;
+  paletteVersion?: number;
   contact: string;
   name: string;
   school: string;
@@ -31,6 +45,11 @@ type PersistedSettings = {
   diningSystemSummary: string;
   diningSessionConfigured: boolean;
   configuredDiningSession: string | null;
+  planBalance?: string;
+  planDaysLeft?: string;
+  lastCraving?: string;
+  lastContext?: string;
+  campusSpots?: CampusSpot[];
 };
 
 type DiningPlanContextValue = {
@@ -61,6 +80,16 @@ type DiningPlanContextValue = {
   setDiningSessionConfigured: React.Dispatch<React.SetStateAction<boolean>>;
   configuredDiningSession: string | null;
   setConfiguredDiningSession: React.Dispatch<React.SetStateAction<string | null>>;
+  planBalance: string;
+  setPlanBalance: React.Dispatch<React.SetStateAction<string>>;
+  planDaysLeft: string;
+  setPlanDaysLeft: React.Dispatch<React.SetStateAction<string>>;
+  lastCraving: string;
+  setLastCraving: React.Dispatch<React.SetStateAction<string>>;
+  lastContext: string;
+  setLastContext: React.Dispatch<React.SetStateAction<string>>;
+  campusSpots: CampusSpot[];
+  setCampusSpots: React.Dispatch<React.SetStateAction<CampusSpot[]>>;
 };
 
 const DiningPlanContext = React.createContext<DiningPlanContextValue | null>(null);
@@ -81,6 +110,11 @@ export function DiningPlanProvider({ children }: { children: React.ReactNode }) 
   const [diningSystemSummary, setDiningSystemSummary] = React.useState('');
   const [diningSessionConfigured, setDiningSessionConfigured] = React.useState(false);
   const [configuredDiningSession, setConfiguredDiningSession] = React.useState<string | null>(null);
+  const [planBalance, setPlanBalance] = React.useState('');
+  const [planDaysLeft, setPlanDaysLeft] = React.useState('');
+  const [lastCraving, setLastCraving] = React.useState('');
+  const [lastContext, setLastContext] = React.useState('');
+  const [campusSpots, setCampusSpots] = React.useState<CampusSpot[]>([]);
   const [hydrated, setHydrated] = React.useState(false);
 
   React.useEffect(() => {
@@ -111,7 +145,7 @@ export function DiningPlanProvider({ children }: { children: React.ReactNode }) 
         }
         if (typeof parsed.deliveryService === 'string') setDeliveryService(parsed.deliveryService);
         if (typeof parsed.customDeliveryService === 'string') setCustomDeliveryService(parsed.customDeliveryService);
-        if (parsed.universityTheme && typeof parsed.universityTheme === 'object') {
+        if (parsed.universityTheme && typeof parsed.universityTheme === 'object' && parsed.paletteVersion === PALETTE_VERSION) {
           setUniversityTheme((prev) => ({
             ...prev,
             ...parsed.universityTheme,
@@ -124,6 +158,13 @@ export function DiningPlanProvider({ children }: { children: React.ReactNode }) 
         if (typeof parsed.diningSessionConfigured === 'boolean') setDiningSessionConfigured(parsed.diningSessionConfigured);
         if (typeof parsed.configuredDiningSession === 'string' || parsed.configuredDiningSession === null) {
           setConfiguredDiningSession(parsed.configuredDiningSession);
+        }
+        if (typeof parsed.planBalance === 'string') setPlanBalance(parsed.planBalance);
+        if (typeof parsed.planDaysLeft === 'string') setPlanDaysLeft(parsed.planDaysLeft);
+        if (typeof parsed.lastCraving === 'string') setLastCraving(parsed.lastCraving);
+        if (typeof parsed.lastContext === 'string') setLastContext(parsed.lastContext);
+        if (Array.isArray(parsed.campusSpots)) {
+          setCampusSpots(parsed.campusSpots.filter((item): item is CampusSpot => Boolean(item && typeof item.name === 'string')));
         }
       } catch {
         // Ignore malformed persisted data and fall back to defaults.
@@ -147,6 +188,7 @@ export function DiningPlanProvider({ children }: { children: React.ReactNode }) 
     const payload: PersistedSettings = {
       authToken: null,
       authUsername,
+      paletteVersion: PALETTE_VERSION,
       contact,
       name,
       school,
@@ -158,6 +200,11 @@ export function DiningPlanProvider({ children }: { children: React.ReactNode }) 
       diningSystemSummary,
       diningSessionConfigured,
       configuredDiningSession,
+      planBalance,
+      planDaysLeft,
+      lastCraving,
+      lastContext,
+      campusSpots,
     };
 
     AsyncStorage.setItem(SETTINGS_STORAGE_KEY, JSON.stringify(payload)).catch(() => {
@@ -177,6 +224,11 @@ export function DiningPlanProvider({ children }: { children: React.ReactNode }) 
     diningSystemSummary,
     diningSessionConfigured,
     configuredDiningSession,
+    planBalance,
+    planDaysLeft,
+    lastCraving,
+    lastContext,
+    campusSpots,
   ]);
 
   const value = React.useMemo<DiningPlanContextValue>(() => ({
@@ -207,6 +259,16 @@ export function DiningPlanProvider({ children }: { children: React.ReactNode }) 
     setDiningSessionConfigured,
     configuredDiningSession,
     setConfiguredDiningSession,
+    planBalance,
+    setPlanBalance,
+    planDaysLeft,
+    setPlanDaysLeft,
+    lastCraving,
+    setLastCraving,
+    lastContext,
+    setLastContext,
+    campusSpots,
+    setCampusSpots,
   }), [
     hydrated,
     authToken,
@@ -222,6 +284,11 @@ export function DiningPlanProvider({ children }: { children: React.ReactNode }) 
     diningSystemSummary,
     diningSessionConfigured,
     configuredDiningSession,
+    planBalance,
+    planDaysLeft,
+    lastCraving,
+    lastContext,
+    campusSpots,
   ]);
 
   return <DiningPlanContext.Provider value={value}>{children}</DiningPlanContext.Provider>;
