@@ -78,6 +78,39 @@
 
 The prototype requires two public HTTPS URLs: the FastAPI backend and the Expo static web app. Deploy the backend first because `EXPO_PUBLIC_API_URL` is embedded into the frontend bundle during export.
 
+#### Recommended optimal method
+
+For the fastest submission-ready prototype, use **Render for the backend** and **EAS Hosting for the frontend**. This avoids native signing, APK/TestFlight installation friction, and dependence on the development laptop.
+
+1. Create a Render Python web service from this GitHub repository.
+2. Set Render's root directory to `backend`.
+3. Use `pip install -r requirements.txt` as the build command.
+4. Use `python server.py` as the start command.
+5. Add `GEMINI_API_KEY` as a secret environment variable.
+6. Attach a persistent disk and set `DINEWISE_USERS_DB_PATH` to `<mounted-disk>/users.json`.
+7. Temporarily set `DINEWISE_CORS_ORIGINS=*` and deploy.
+8. Verify `https://<render-service>/` returns `{"message":"DineWise backend is running"}`.
+9. From the project root, build the frontend against that URL:
+
+   ```powershell
+   $env:EXPO_PUBLIC_API_URL="https://<render-service>"
+   npm ci
+   npm run web:export
+   ```
+
+10. Publish the exported site with EAS Hosting:
+
+  ```bash
+  npx eas-cli@latest login
+  npx eas-cli@latest deploy --prod
+  ```
+
+11. Copy the resulting `https://<subdomain>.expo.app` URL into Render's `DINEWISE_CORS_ORIGINS`, then redeploy the backend.
+12. Rebuild/redeploy the frontend whenever the backend URL changes because `EXPO_PUBLIC_API_URL` is compiled into the static bundle.
+13. Run the public smoke test below from a phone or network outside the development LAN.
+
+This public web URL should be the primary prototype link for judges and remote testers. Build a native APK/TestFlight version only if the submission explicitly requires installation; otherwise it adds deployment risk without improving the core demo.
+
 #### 1. Deploy the backend
 
 Use a Python host that supports a persistent disk/volume (Render, Railway, Fly.io, or equivalent).
