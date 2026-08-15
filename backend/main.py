@@ -32,6 +32,7 @@ class ThemeResponse(BaseModel):
 
 
 THEME_CACHE: dict[str, dict] = {}
+THEME_CACHE_VERSION = 2
 
 
 def normalize_school_name(school_name: str) -> str:
@@ -84,6 +85,14 @@ def relative_luminance(hex_color: str) -> float:
     return 0.2126 * rl + 0.7152 * gl + 0.0722 * bl
 
 
+def contrast_ratio(first: str, second: str) -> float:
+    first_luminance = relative_luminance(first)
+    second_luminance = relative_luminance(second)
+    lighter = max(first_luminance, second_luminance)
+    darker = min(first_luminance, second_luminance)
+    return (lighter + 0.05) / (darker + 0.05)
+
+
 def _saturation(hex_color: str) -> float:
     rgb = hex_to_rgb(hex_color)
     if not rgb:
@@ -126,9 +135,17 @@ def normalize_palette_colors(colors: list[str], text: str) -> dict:
 
     rest = [color for color in ordered if color != page]
 
-    # Cards use the lightest official color, preferring branded hues over white/grey.
-    chromatic = [color for color in rest if _saturation(color) >= 0.18]
-    surface = max(chromatic or rest, key=relative_luminance)
+    # Cards stay inside the official palette but must visibly separate from the page.
+    separated = [color for color in rest if contrast_ratio(page, color) >= 2.0]
+    if not separated:
+        return dict(STARTUP_THEME)
+
+    chromatic = [color for color in separated if _saturation(color) >= 0.18]
+    surface = (
+        max(chromatic, key=relative_luminance)
+        if chromatic
+        else min(separated, key=relative_luminance)
+    )
     accents = [color for color in rest if color != surface] or rest
 
     resolved_text = (text or '').strip().lower()
@@ -192,7 +209,8 @@ def fetch_university_info_from_gemini(school_name: str, student_level: str | Non
         '- known: false if you cannot find a real university matching this name, then return {"known": false}'
     )
 
-    if not gemini_client:
+    client = get_gemini_client()
+    if not client:
         return None
     search_config = genai_types.GenerateContentConfig(
         tools=[genai_types.Tool(google_search=genai_types.GoogleSearch())],
@@ -200,7 +218,7 @@ def fetch_university_info_from_gemini(school_name: str, student_level: str | Non
     )
     for model_name in ["gemini-2.5-flash", "gemini-2.0-flash", "gemini-1.5-flash"]:
         try:
-            response = gemini_client.models.generate_content(
+            response = client.models.generate_content(
                 model=model_name,
                 contents=prompt,
                 config=search_config,
@@ -236,7 +254,7 @@ def fetch_university_info_from_gemini(school_name: str, student_level: str | Non
 
 
 def build_university_theme(school_name: str, student_level: str | None = None) -> dict | None:
-    cache_key = f'{normalize_school_name(school_name)}::{student_level or ""}'
+    cache_key = f'v{THEME_CACHE_VERSION}:{normalize_school_name(school_name)}::{student_level or ""}'
 
     cached_theme = THEME_CACHE.get(cache_key)
     if cached_theme:
@@ -260,17 +278,18 @@ def build_university_theme(school_name: str, student_level: str | None = None) -
     # Never cache the fallback: it is not this school's data, and caching it would block retries.
     fallback_theme = build_fallback_theme(school_name, student_level)
     fallback_theme['logo_url'] = logo_url
-    THEME_CACHE[cache_key] = fallback_theme
     return fallback_theme
 
 root_dir = os.path.dirname(__file__)
 load_dotenv(os.path.join(root_dir, '.env'))
 
 app = FastAPI()
+cors_origins_raw = os.getenv('DINEWISE_CORS_ORIGINS', '*')
+cors_origins = [origin.strip() for origin in cors_origins_raw.split(',') if origin.strip()]
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=['*'],
-    allow_credentials=True,
+    allow_origins=cors_origins or ['*'],
+    allow_credentials=False,
     allow_methods=['*'],
     allow_headers=['*'],
 )
@@ -280,7 +299,16 @@ if not gemini_api_key:
     import warnings
     warnings.warn('GEMINI_API_KEY is not set — Gemini features will be unavailable.')
 
-gemini_client = genai.Client(api_key=gemini_api_key) if gemini_api_key else None
+_gemini_client = None
+
+
+def get_gemini_client():
+    global _gemini_client
+    if not gemini_api_key:
+        return None
+    if _gemini_client is None:
+        _gemini_client = genai.Client(api_key=gemini_api_key)
+    return _gemini_client
 
 class UserInput(BaseModel):
     balance: float
@@ -333,7 +361,7 @@ class AuthDeleteResponse(BaseModel):
     message: str
 
 
-USERS_DB_PATH = os.path.join(root_dir, 'users.json')
+USERS_DB_PATH = os.getenv('DINEWISE_USERS_DB_PATH', os.path.join(root_dir, 'users.json'))
 
 
 def _normalize_username(username: str) -> str:
@@ -368,6 +396,8 @@ def _load_users_db() -> dict:
 
 
 def _save_users_db(data: dict) -> None:
+    users_db_directory = os.path.dirname(os.path.abspath(USERS_DB_PATH))
+    os.makedirs(users_db_directory, exist_ok=True)
     with open(USERS_DB_PATH, 'w', encoding='utf-8') as f:
         json.dump(data, f, indent=2)
 
@@ -609,19 +639,24 @@ def _apply_time_sensitive_guardrails(
     safe_quick = quick_nudge
     safe_backup = backup_option
     safe_why = concise_why
+    savings_backup = (
+        f'Using prepaid value could save ~${weekly_avoidable:.1f}/week.'
+        if weekly_avoidable > 0
+        else 'Compare your prepaid plan before paying out of pocket.'
+    )
 
     # If user context indicates closures and no clearly open alternatives,
     # avoid recommending a hall trip right now.
     if closed_mentions > 0 and open_mentions == 0 and soon_closing_mentions == 0:
-        safe_quick = 'Your halls look closed now; avoid a wasted trip.'
-        safe_backup = f'Skip delivery if possible; save ~${weekly_avoidable:.1f}/week.'
+        safe_quick = 'Your saved halls appear closed right now.'
+        safe_backup = 'Delivery may be the practical choice tonight.'
         safe_why = 'Use confirmed opening windows before heading out.'
         return safe_quick, safe_backup, safe_why
 
     # If user context says a hall is about to close, make urgency explicit.
     if soon_closing_mentions > 0:
         safe_quick = 'If your hall closes soon, go now.'
-        safe_backup = f'If it closes first, use your best open option and save ~${weekly_avoidable:.1f}/week.'
+        safe_backup = savings_backup
         safe_why = 'Your timing info suggests limited open-window minutes.'
 
     return safe_quick, safe_backup, safe_why
@@ -637,12 +672,17 @@ def _sanitize_location_copy(
     safe_quick = quick_nudge
     safe_backup = backup_option
     safe_why = concise_why
+    savings_backup = (
+        f'Using prepaid value could save ~${weekly_avoidable:.1f}/week.'
+        if weekly_avoidable > 0
+        else 'Compare your prepaid plan before paying out of pocket.'
+    )
 
     if quick_nudge and _contains_location_claim(quick_nudge):
         safe_quick = 'Pick your go-to hall and use swipes first.'
 
     if backup_option and _contains_location_claim(backup_option):
-        safe_backup = f'Skip one delivery, save ~${weekly_avoidable:.1f}/week.'
+        safe_backup = savings_backup
 
     if concise_why and _contains_location_claim(concise_why):
         safe_why = 'You know your campus best; this keeps spending tighter.'
@@ -652,7 +692,7 @@ def _sanitize_location_copy(
             safe_quick = 'Use your meal plan at your preferred hall today.'
 
         if safe_backup and _contains_hours_or_menu_claim(safe_backup):
-            safe_backup = f'Skip one delivery, save ~${weekly_avoidable:.1f}/week.'
+            safe_backup = savings_backup
 
         if safe_why and _contains_hours_or_menu_claim(safe_why):
             safe_why = 'Hours and specials vary; you know the best live options.'
@@ -691,13 +731,17 @@ def _estimate_weekly_avoidable_spend(
         'running low': 0.8,
         'almost empty': 0.55,
     }
-    freq_base = freq_weight.get(_normalize_text(delivery_frequency), 6.5)
+    normalized_frequency = _normalize_text(delivery_frequency)
+    if normalized_frequency not in freq_weight:
+        return 0.0
+
+    freq_base = freq_weight[normalized_frequency]
     status_factor = status_weight.get(_normalize_text(meal_plan_status), 1.0)
     estimate = freq_base * status_factor
     if follow_through is not None:
         # Students who rarely follow through leave more spend on the table.
         estimate *= 0.85 + (1.0 - follow_through) * 0.3
-    return round(max(4.0, estimate), 1)
+    return round(max(0.0, estimate), 1)
 
 
 def _build_confidence_metadata(data: UserInput, context_text: str) -> tuple[str, list[str], str]:
@@ -730,9 +774,13 @@ def _build_confidence_metadata(data: UserInput, context_text: str) -> tuple[str,
 
 
 def _build_campus_first_fallback(data: UserInput, weekly_avoidable: float) -> tuple[str, str, list[str]]:
-    quick_nudge = 'Use your meal plan tonight.'
-    backup_option = f'Skip one delivery, save ~${weekly_avoidable:.1f}/week.'
-    why = 'You know your campus best; swipes protect your budget.'
+    quick_nudge = 'Your meal plan already covers tonight.'
+    backup_option = (
+        f'Using prepaid value could save ~${weekly_avoidable:.1f}/week.'
+        if weekly_avoidable > 0
+        else 'Compare your prepaid plan before paying out of pocket.'
+    )
+    why = 'You already paid for it, so it is the cheaper option.'
     return quick_nudge, why, [quick_nudge, backup_option, why]
 
 
@@ -918,10 +966,14 @@ async def get_nudge(data: UserInput, authorization: str | None = Header(default=
         f"{plan_note}"
         f"{intent_note}"
         f"{follow_through_note}"
-        " Give concise, action-first advice for a mobile app card. "
+        " Give one concise action and one plain-language rationale for a mobile app card. "
         " The product goal is meal-plan optimization and reducing unnecessary delivery spend. "
         " By default, prioritize campus dining/meal plan usage as the best move. "
         " Only make delivery the primary recommendation if meal plan is almost empty and external budget is strong. "
+        " Tone matters: be encouraging and non-judgmental, never scolding or preachy. "
+        " Frame campus dining as money the student already spent and can enjoy, not as a restriction. "
+        " Never shame the student for wanting delivery, and never use words like 'don't', 'stop', or 'avoid'. "
+        " Respect that the final choice is theirs. "
         " Never guess dining hall names, routes, or proximity claims. "
         " Students already know their best dining locations; do not pretend to know them. "
         " If location matters, tell the student to choose their preferred hall. "
@@ -931,21 +983,22 @@ async def get_nudge(data: UserInput, authorization: str | None = Header(default=
         " If student-provided context indicates halls are about to close, explicitly say to go soon. "
         "Return ONLY one JSON object with no markdown and no extra text: "
         '{"quick_nudge":"...","backup_option":"...","why":"..."}. '
-        "Rules: quick_nudge max 12 words, backup_option max 10 words, why max 12 words. "
-        " Include a concrete money-saving angle when possible. "
-        "Keep each line direct and specific."
+        "Rules: quick_nudge max 8 words and must be one direct action; why max 14 words and must be one complete sentence. "
+        "backup_option may be empty. Never combine multiple clauses with a semicolon. "
+        "Do not repeat the same fact across fields. Include a concrete money-saving angle when verified."
     )
 
     model_candidates = ['gemini-2.5-flash', 'gemini-2.0-flash', 'gemini-1.5-flash']
     last_error = None
     response = None
 
-    if not gemini_client:
+    client = get_gemini_client()
+    if not client:
         raise HTTPException(status_code=503, detail="Gemini is unavailable. Dynamic nudge generation cannot run right now.")
 
     for model_name in model_candidates:
         try:
-            response = gemini_client.models.generate_content(
+            response = client.models.generate_content(
                 model=model_name,
                 contents=prompt,
             )
@@ -1014,7 +1067,7 @@ async def get_nudge(data: UserInput, authorization: str | None = Header(default=
     return {
         'suggestion': suggestion,
         'prompt': prompt,
-        'savings_estimate': f"~${weekly_avoidable:.1f}/week potential",
+        'savings_estimate': f"~${weekly_avoidable:.1f}/week" if weekly_avoidable > 0 else None,
         'why_it_matches': why_text,
         'nudge_points': nudge_points,
         'confidence_label': confidence_label,

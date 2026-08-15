@@ -24,7 +24,7 @@ The home screen is built around four quick actions:
 - **My usual** reuses the student's last saved preference when one exists.
 - **I have a craving** opens optional refinement controls.
 
-The **About to order delivery?** flow compares a typed delivery total with the best currently open, student-configured campus spot. It can recommend campus, delivery, or report a tie. The verdict and savings are computed locally; no language model supplies financial or availability facts.
+The **About to order delivery?** flow compares a typical delivery amount with the best currently open, student-configured campus spot. Students can choose a common amount, enter a custom amount, or reuse their previous amount. It can recommend campus, recommend delivery, or report a tie. The verdict and savings are computed locally; no language model supplies financial or availability facts.
 
 ### Trusted campus data
 
@@ -42,6 +42,28 @@ DineWise supports overnight hours and ranks open options by meal-plan coverage, 
 
 Students can add their remaining balance and days left in Settings. DineWise calculates the target spend per day and shows plan health in plain language. Waste projections are only shown when enough student-provided behavior data exists; unknown inputs are not replaced with fabricated defaults.
 
+### Waste risk
+
+Waste risk estimates how likely prepaid meal-plan value is to go unused while the student pays for food elsewhere. It uses only provided data:
+
+- meal-plan status
+- delivery frequency
+- outside-food budget
+- recent logged choices (rolling last seven)
+
+Missing answers contribute nothing. Weekly-dollar estimates are shown only when delivery-frequency data exists. Meter Details explains every factor, the current answer used, and practical ways to lower the score.
+
+### Recommendation architecture
+
+DineWise separates facts from language:
+
+1. Student-provided facts and configured campus spots
+2. Deterministic availability, ranking, cost, savings, target, and verdict calculations
+3. A structured recommendation
+4. A constrained AI-generated action and one-sentence rationale
+
+The default Best Move card stays concise. Evidence, confidence, supporting details, recent choices, and the trust policy are available under **Why this recommendation?**.
+
 This is an [Expo](https://expo.dev) project created with [`create-expo-app`](https://www.npmjs.com/package/create-expo-app).
 
 ## Get started
@@ -52,10 +74,18 @@ This is an [Expo](https://expo.dev) project created with [`create-expo-app`](htt
    npm install
    ```
 
-2. Start the app
+2. Start the backend
 
    ```bash
-   npx expo start
+   cd backend
+   source .venv/bin/activate
+   python server.py
+   ```
+
+3. Start the Expo app
+
+   ```bash
+   npx expo start --lan
    ```
 
 In the output, you'll find options to open the app in a
@@ -69,7 +99,7 @@ You can start developing by editing files inside `src/app`. This project uses [f
 
 ## Backend
 
-The app requires the FastAPI backend for theming, meal-plan resolution, auth, and nudges.
+The FastAPI backend provides authentication, university theme/dining lookup, custom meal-plan resolution, and concise recommendation rationales. Financial comparisons and campus availability decisions remain deterministic on the client.
 
 ```bash
 cd backend
@@ -80,6 +110,16 @@ Environment variables:
 
 - `GEMINI_API_KEY` (backend) is required for dynamic theme and nudge generation.
 - `EXPO_PUBLIC_API_URL` (frontend) must point at your machine's LAN IP when testing on a physical device. Loopback hosts are rejected on device.
+
+## Public prototype deployment
+
+Deploy the FastAPI backend first, then export the frontend with its public HTTPS URL:
+
+```bash
+EXPO_PUBLIC_API_URL="https://<backend-host>" npm run web:export
+```
+
+Publish `dist` with EAS Hosting (`npx eas-cli@latest deploy --prod`) or another static host. The backend should use a persistent volume with `DINEWISE_USERS_DB_PATH` and restrict `DINEWISE_CORS_ORIGINS` to the final frontend origin. See [DEVLOG.md](DEVLOG.md) for the full tested deployment and smoke-test runbook.
 
 ### Accounts and local data
 
@@ -97,32 +137,16 @@ python reset_users.py --sessions-only # revoke tokens, keep accounts
 
 The script prompts before deleting and writes a timestamped backup by default.
 
-## Get a fresh project
+## Validation
 
-When you're ready, run:
+The final freeze pass covers:
 
-```bash
-npm run reset-project
-```
+- TypeScript compilation and workspace diagnostics
+- backend syntax and time-sensitive guardrails
+- target-per-day arithmetic
+- campus-cheaper, delivery-cheaper, and tie outcomes
+- missing-data behavior
+- standard and overnight opening windows
+- fresh-account/session isolation
 
-This command will move the starter code to the **app-example** directory and create a blank **app** directory where you can start developing.
-
-### Other setup steps
-
-- To set up ESLint for linting, run `npx expo lint`, or follow our guide on ["Using ESLint and Prettier"](https://docs.expo.dev/guides/using-eslint/)
-- If you'd like to set up unit testing, follow our guide on ["Unit Testing with Jest"](https://docs.expo.dev/develop/unit-testing/)
-- Learn more about the TypeScript setup in this template in our guide on ["Using TypeScript"](https://docs.expo.dev/guides/typescript/)
-
-## Learn more
-
-To learn more about developing your project with Expo, look at the following resources:
-
-- [Expo documentation](https://docs.expo.dev/): Learn fundamentals, or go into advanced topics with our [guides](https://docs.expo.dev/guides).
-- [Learn Expo tutorial](https://docs.expo.dev/tutorial/introduction/): Follow a step-by-step tutorial where you'll create a project that runs on Android, iOS, and the web.
-
-## Join the community
-
-Join our community of developers creating universal apps.
-
-- [Expo on GitHub](https://github.com/expo/expo): View our open source platform and contribute.
-- [Discord community](https://chat.expo.dev): Chat with Expo users and ask questions.
+See [DEVLOG.md](DEVLOG.md) for the dated implementation and validation history.

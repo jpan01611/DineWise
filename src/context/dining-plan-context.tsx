@@ -27,7 +27,7 @@ export const STARTUP_UNIVERSITY_THEME: UniversityTheme = {
 
 const SETTINGS_STORAGE_KEY = 'dinewise.settings.v1';
 // Bump when palette resolution changes so stale stored themes are discarded instead of shown.
-const PALETTE_VERSION = 2;
+const PALETTE_VERSION = 3;
 
 type PersistedSettings = {
   authToken: string | null;
@@ -50,6 +50,7 @@ type PersistedSettings = {
   lastCraving?: string;
   lastContext?: string;
   campusSpots?: CampusSpot[];
+  typicalDeliveryCost?: string;
 };
 
 type DiningPlanContextValue = {
@@ -90,6 +91,8 @@ type DiningPlanContextValue = {
   setLastContext: React.Dispatch<React.SetStateAction<string>>;
   campusSpots: CampusSpot[];
   setCampusSpots: React.Dispatch<React.SetStateAction<CampusSpot[]>>;
+  typicalDeliveryCost: string;
+  setTypicalDeliveryCost: React.Dispatch<React.SetStateAction<string>>;
 };
 
 const DiningPlanContext = React.createContext<DiningPlanContextValue | null>(null);
@@ -115,6 +118,7 @@ export function DiningPlanProvider({ children }: { children: React.ReactNode }) 
   const [lastCraving, setLastCraving] = React.useState('');
   const [lastContext, setLastContext] = React.useState('');
   const [campusSpots, setCampusSpots] = React.useState<CampusSpot[]>([]);
+  const [typicalDeliveryCost, setTypicalDeliveryCost] = React.useState('');
   const [hydrated, setHydrated] = React.useState(false);
 
   React.useEffect(() => {
@@ -166,6 +170,7 @@ export function DiningPlanProvider({ children }: { children: React.ReactNode }) 
         if (Array.isArray(parsed.campusSpots)) {
           setCampusSpots(parsed.campusSpots.filter((item): item is CampusSpot => Boolean(item && typeof item.name === 'string')));
         }
+        if (typeof parsed.typicalDeliveryCost === 'string') setTypicalDeliveryCost(parsed.typicalDeliveryCost);
       } catch {
         // Ignore malformed persisted data and fall back to defaults.
       } finally {
@@ -205,6 +210,7 @@ export function DiningPlanProvider({ children }: { children: React.ReactNode }) 
       lastCraving,
       lastContext,
       campusSpots,
+      typicalDeliveryCost,
     };
 
     AsyncStorage.setItem(SETTINGS_STORAGE_KEY, JSON.stringify(payload)).catch(() => {
@@ -229,6 +235,7 @@ export function DiningPlanProvider({ children }: { children: React.ReactNode }) 
     lastCraving,
     lastContext,
     campusSpots,
+    typicalDeliveryCost,
   ]);
 
   const value = React.useMemo<DiningPlanContextValue>(() => ({
@@ -269,6 +276,8 @@ export function DiningPlanProvider({ children }: { children: React.ReactNode }) 
     setLastContext,
     campusSpots,
     setCampusSpots,
+    typicalDeliveryCost,
+    setTypicalDeliveryCost,
   }), [
     hydrated,
     authToken,
@@ -289,6 +298,7 @@ export function DiningPlanProvider({ children }: { children: React.ReactNode }) 
     lastCraving,
     lastContext,
     campusSpots,
+    typicalDeliveryCost,
   ]);
 
   return <DiningPlanContext.Provider value={value}>{children}</DiningPlanContext.Provider>;

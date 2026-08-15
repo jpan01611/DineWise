@@ -19,8 +19,8 @@ def test_guardrail_blocks_closed_hall_recommendation():
         },
     )
 
-    assert quick == 'Your halls look closed now; avoid a wasted trip.'
-    assert 'save ~$9.5/week' in (backup or '')
+    assert quick == 'Your saved halls appear closed right now.'
+    assert backup == 'Delivery may be the practical choice tonight.'
     assert why == 'Use confirmed opening windows before heading out.'
 
 

@@ -1,5 +1,170 @@
 # DineWise DEVLOG
 
+## Update (2026-08-14) — Product Freeze
+
+### Recommendation Experience
+
+- Reduced Best Move to the decision, verified savings (when available), one short rationale, and outcome actions.
+- Moved evidence chips, confidence/source, supporting points, recent choices, and the trust policy behind an expandable **Why this recommendation?** section.
+- Removed semester-potential and derived weekly-savings analytics that depended on assumptions difficult to defend.
+- Filtered duplicate headline/rationale text from supporting points.
+- Tightened the backend prompt contract:
+  - one direct action (maximum 8 words)
+  - one complete rationale (maximum 14 words)
+  - no semicolon-heavy multi-clause copy
+  - no repeated facts across fields
+- Replaced the large AI-thinking state with a compact **Checking your plan...** indicator.
+
+### Delivery Check Finalization
+
+- Replaced **You could keep $X** with the direct **Save $X** headline.
+- Added a **Use my meal plan** CTA when campus is the cheaper verified choice.
+- Added common delivery-cost presets and remembered the last checked amount so students do not need to reach checkout or switch apps.
+- Preserved all three deterministic outcomes: campus cheaper, delivery cheaper, and tie.
+- Preserved the no-open-campus-option state and overnight-hours support.
+- Kept the tone non-judgmental: DineWise shows the math and leaves the final choice to the student.
+
+### Waste Risk Clarity and Correctness
+
+- Added staged meter feedback: **Updating waste risk...** appears before the percentage and liquid move, followed by an increased/decreased result.
+- Kept the percentage above liquid, waves, and glare with an adaptive contrast badge and explicit layer ordering.
+- Expanded Meter Details with:
+  - a plain-language definition
+  - all four score drivers
+  - current answers and missing-input states
+  - practical ways to lower risk
+  - clear separation between a risk score and an estimated weekly dollar amount
+- Corrected score direction:
+  - more unused meal-plan value raises risk
+  - an almost-empty plan lowers risk
+  - more outside-food spending capacity raises risk
+  - better recent meal-plan follow-through lowers risk slightly
+- Removed hidden defaults: unanswered fields contribute nothing.
+- Weekly savings now requires an actual delivery-frequency answer; missing data no longer produces a fabricated estimate.
+- Recent-choice displays use the actual number of logged choices (up to the rolling last seven), not a fixed `/7` denominator.
+
+### Theme and Mobile Readability
+
+- Added a minimum page/card contrast gate for saturated university palettes.
+- MIT-like palettes now reject bright red-on-red surfaces and prefer an official neutral such as silver when it clears contrast.
+- If no official university pair is readable, the full startup palette is used instead of synthesizing colors.
+- Increased nested surface opacity for setup hints, quick actions, plan cards, stats, delivery checks, and impact blocks.
+- Bumped client and backend palette-cache versions so previously stored low-contrast themes are discarded.
+
+### UX and Reliability Cleanup
+
+- Added setup guidance explaining why exact dollar comparisons are unavailable and linking directly to missing configuration.
+- Replaced internal jargon such as **Spend pressure** with plain-language labels such as **Waste risk** and **Could save / week**.
+- Added smooth auto-scroll to Craving Check and Best Move using measured offsets rather than nested relative layout values.
+- Fixed new-account/session state leakage for cravings, usual choices, campus spots, balance, and open panels.
+- Removed dead helpers, dead analytics styles, duplicate recommendation copy, and an accidental terminal-output artifact.
+- Preserved source files' original line-ending conventions to avoid unrelated diff churn.
+
+### Final Validation
+
+- TypeScript diagnostics: clean.
+- Workspace diagnostics: clean.
+- Backend syntax: passed.
+- Time-sensitive guardrail tests: passed when invoked directly (pytest is not installed in the backend virtualenv).
+- Deterministic scenarios verified:
+  - $50 / 16 days = $3.13/day
+  - $225 / 28 days = $8.04/day
+  - campus cheaper, delivery cheaper, and tie verdicts
+  - no delivery data produces no weekly savings estimate
+  - nearly-empty plans reduce risk relative to plans with plenty left
+  - overnight campus hours remain open across midnight
+
+### Working Prototype URL Runbook
+
+The prototype requires two public HTTPS URLs: the FastAPI backend and the Expo static web app. Deploy the backend first because `EXPO_PUBLIC_API_URL` is embedded into the frontend bundle during export.
+
+#### 1. Deploy the backend
+
+Use a Python host that supports a persistent disk/volume (Render, Railway, Fly.io, or equivalent).
+
+- Root directory: `backend`
+- Build command: `pip install -r requirements.txt`
+- Start command: `python server.py`
+- Required environment variable: `GEMINI_API_KEY`
+- Initial CORS value: `DINEWISE_CORS_ORIGINS=*`
+- Persistent account-store path: `DINEWISE_USERS_DB_PATH=<mounted-volume>/users.json`
+
+Without a persistent volume, prototype accounts and sessions may disappear after a deploy/restart. Do not commit or upload the local `backend/users.json` file.
+
+Verify the backend before continuing:
+
+```text
+https://<backend-host>/
+```
+
+Expected response:
+
+```json
+{"message":"DineWise backend is running"}
+```
+
+#### 2. Build the web app against the public backend
+
+PowerShell:
+
+```powershell
+cd C:\Users\galva\Desktop\DineWise
+$env:EXPO_PUBLIC_API_URL="https://<backend-host>"
+npm ci
+npm run web:export
+```
+
+Bash:
+
+```bash
+EXPO_PUBLIC_API_URL="https://<backend-host>" npm run web:export
+```
+
+The production bundle is generated in `dist`. The export command was tested successfully and generated all Expo Router static routes.
+
+The current local test export was intentionally built with `https://example-backend.invalid` to verify environment-variable embedding. Do not publish that bundle. Delete/rebuild `dist` with the real public backend URL immediately before deployment.
+
+#### 3A. Publish with EAS Hosting
+
+```bash
+npx eas-cli@latest login
+npx eas-cli@latest deploy --prod
+```
+
+EAS prints the final `https://<subdomain>.expo.app` URL.
+
+#### 3B. Or publish with another static host
+
+- Build command: `npm ci && npm run web:export`
+- Publish/output directory: `dist`
+- Build environment variable: `EXPO_PUBLIC_API_URL=https://<backend-host>`
+
+#### 4. Lock CORS to the final frontend URL
+
+After the frontend URL is known, change the backend setting from `*` to the exact origin:
+
+```text
+DINEWISE_CORS_ORIGINS=https://<frontend-host>
+```
+
+Multiple origins can be comma-separated. Redeploy/restart the backend after changing this value.
+
+#### 5. Public smoke test
+
+Run this from a browser/device that is not using the development machine's LAN:
+
+1. Open the frontend HTTPS URL.
+2. Create a fresh account and complete setup.
+3. Add balance/days and one campus spot.
+4. Run delivery check and generate Best Move.
+5. Refresh the browser and log in again.
+6. Delete the account and confirm login fails afterward.
+7. Confirm no request uses `localhost`, a LAN IP, or mixed HTTP/HTTPS.
+
+If the backend URL changes, re-export and redeploy the frontend; changing the backend alone does not update an already-built static bundle.
+
+Deployment preparation also added lazy Gemini-client initialization and `backend/server.py`. This avoids blocking backend health/startup on external client construction and bypasses an import-string stall reproduced with this environment's Uvicorn path. The direct entry point was tested with deployment-style CORS/storage variables through Uvicorn's **Application startup complete** state, followed by a real `GET /` request returning HTTP 200 and `{"message":"DineWise backend is running"}`.
+
 ## Update (2026-08-13)
 
 ### Product Direction: One-Tap Decision Assistant
